@@ -82,7 +82,7 @@ int main(int argc, char **argv)
 // https://stackoverflow.com/questions/29852077/will-a-process-writing-to-a-pipe-block-if-the-pipe-is-full#comment47830197_29852077 - write do pełnego pipe'a jest blokujący, read z pustego też
 
 /*
-for i in {1..100}
+for i in {1..1000}
 do
    echo $i
    ./mimpirun 16 ./main

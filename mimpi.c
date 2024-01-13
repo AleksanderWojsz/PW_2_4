@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
+#include <dirent.h>
 
 #define POM_PIPES 90
 #define OUT_OF_MPI_BLOCK (-1)
@@ -596,31 +597,6 @@ void MIMPI_Finalize() {
 
     notify_iam_out(); // Zabraniamy wysłać do nas wiadomości poprzez MIMPI_SEND
 
-    for (int i = 0; i < MIMPI_World_size(); i++) { // Wysyłamy do pipe'ów od babiery, wiadomość z tagiem -1, że nas nie będzie
-        if (i != MIMPI_World_rank()) {
-            if (is_in_MPI_block(i)) {
-                void *message = malloc(512);
-                assert(message);
-                memset(message, 0, 512);
-                int tag = -no_of_barrier - 1;
-                memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
-
-
-//                int pipe_size = 0;
-//                if (ioctl(get_barrier_write_desc(i), FIONREAD, &pipe_size) >= 0) {
-//                    printf("check_1, process %d, there are %d bytes in the pipe, iteration %d\n", world_rank, pipe_size, i);
-//                }
-//                printf("Skonczylem %d\n", world_rank);
-                chsend(get_barrier_write_desc(i), message, 512); // Tag oznacza liczbe barier przez które przeszliśmy na minusie - 1
-//                printf("check_2, process %d\n", world_rank);
-//                fflush(stdout);
-
-                free(message);
-            }
-    //            send_message_to_pipe_barrier(get_barrier_write_desc(i), message, 100); // Tag oznacza liczbe barier przez które przeszliśmy na minusie - 1 // TODO to nie ustawi tagu
-        }
-    }
-
     if (deadlock_detection) {
         for (int i = 0; i < MIMPI_World_size(); i++) { // Wysyłamy do pipe'ów od deadlock, że skonczyliśmy i nie będzie z nami deadlocka już nigdy
             if (i != MIMPI_World_rank()) {
@@ -692,16 +668,43 @@ void MIMPI_Finalize() {
     pthread_mutex_destroy(&parent_sleeping);
     pthread_mutex_destroy(&unread_messages_sleeping);
 
-    // zamykanie wszystkich deskryptorów
-    for (int i = 20; i < 20 + 2 * POM_PIPES; i++) {
-        close(i);
-    }
-
     for (int i = 0; i < MIMPI_World_size(); i++) {
         for (int j = 0; j < MIMPI_World_size(); j++) {
-            close(MIMPI_get_read_desc(i, j));
-            close(MIMPI_get_write_desc(i, j));
+            ASSERT_SYS_OK(close(MIMPI_get_read_desc(i, j)));
+            ASSERT_SYS_OK(close(MIMPI_get_write_desc(i, j)));
         }
+    }
+
+
+    for (int i = 0; i < world_size; i++) {
+        ASSERT_SYS_OK(close(get_barrier_read_desc(i)));
+    }
+
+    for (int i = get_barrier_read_desc(world_size); i < 60; i++) {
+        ASSERT_SYS_OK(close(i));
+    }
+
+    for (int i = 0; i < MIMPI_World_size(); i++) { // Wysyłamy do pipe'ów od babiery, wiadomość z tagiem -1, że nas nie będzie
+        if (i != MIMPI_World_rank()) {
+
+            void *message = malloc(512);
+            assert(message);
+            memset(message, 0, 512);
+            int tag = -no_of_barrier - 1;
+            memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
+
+            chsend(get_barrier_write_desc(i), message, 512);
+            free(message);
+        }
+    }
+
+
+    for (int i = 0; i < world_size; i++) {
+        ASSERT_SYS_OK(close(get_barrier_write_desc(i)));
+    }
+
+    for (int i = 60; i < 20 + 2 * POM_PIPES; i++) {
+        ASSERT_SYS_OK(close(i));
     }
 
     channels_finalize();
