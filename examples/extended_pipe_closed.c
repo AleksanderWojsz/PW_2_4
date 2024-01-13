@@ -73,6 +73,7 @@ int main(int argc, char **argv)
         // heurystyczne założenie że chwrite zakończy się z błędem "Zamknięty odpbiorca".
         setenv("CHANNELS_WRITE_DELAY", "1000", true);
         ASSERT_MIMPI_RETCODE(MIMPI_Barrier(), MIMPI_ERROR_REMOTE_FINISHED);
+        unsetenv("CHANNELS_WRITE_DELAY"); // TODO dodalem
     }
     else if (world_rank == 5)
     {

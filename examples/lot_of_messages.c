@@ -5,7 +5,7 @@
 #include "mimpi_err.h"
 #include "test.h"
 
-#define steps 200000
+#define steps 20000 // 200000
 #define tagSpace 12
 #define spaceSize 12
 

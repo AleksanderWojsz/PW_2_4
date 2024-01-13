@@ -11,6 +11,99 @@
 #include "examples/test.h"
 #include "examples/mimpi_err.h"
 
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <unistd.h>
+#include "mimpi.h"
+
+
+#define NS_PER_1_MS 1##000##000
+
+// based on: https://stackoverflow.com/questions/1157209/is-there-an-alternative-sleep-function-in-c-to-milliseconds
+/* msleep(): Sleep for the requested number of milliseconds. */
+static int msleep(long msec)
+{
+    struct timespec ts;
+    int res;
+
+    if (msec < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ts.tv_sec = msec / 1000;
+    ts.tv_nsec = (msec % 1000) * 1000000;
+
+    do
+    {
+        res = nanosleep(&ts, &ts);
+    } while (res && errno == EINTR);
+
+    return res;
+}
+
+int main(int argc, char **argv)
+{
+    MIMPI_Init(false);
+
+    int const world_rank = MIMPI_World_rank();
+
+    int const tag = 17;
+
+    char number = 42;
+    if (world_rank == 0)
+    {
+        msleep(500);
+    }
+    else if (world_rank == 1)
+    {
+        ASSERT_MIMPI_RETCODE(MIMPI_Recv(&number, 1, 0, tag), MIMPI_ERROR_REMOTE_FINISHED);
+        if (MIMPI_World_size() > 6)
+            ASSERT_MIMPI_RETCODE(MIMPI_Send(&number, 1, 0, tag), MIMPI_ERROR_REMOTE_FINISHED);
+        ASSERT_MIMPI_RETCODE(MIMPI_Recv(&number, 1, 0, tag), MIMPI_ERROR_REMOTE_FINISHED);
+        assert(number == 42);
+    }
+    else if (world_rank == 4)
+    {
+        // heurystyczne założenie że chwrite zakończy się z błędem "Zamknięty odpbiorca".
+        setenv("CHANNELS_WRITE_DELAY", "1000", true);
+        ASSERT_MIMPI_RETCODE(MIMPI_Barrier(), MIMPI_ERROR_REMOTE_FINISHED);
+        int res = unsetenv("CHANNELS_WRITE_DELAY");
+        assert(res == 0);
+    }
+
+    MIMPI_Finalize();
+    printf("Done %d\n", world_rank);
+    return test_success();
+}
+
+
+
+
+
+// TODO lot_of_messages dziala ale w 5 minut
+// extended pipe closed dziala jak dodałem usuwanie delay po barierze
+
+
+/*
+#include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdint-gcc.h>
+#include "mimpi.h"
+#include "examples/test.h"
+#include "examples/mimpi_err.h"
+
 #define WRITE_VAR "CHANNELS_WRITE_DELAY"
 #define NS_PER_1_MS 1 ## 000 ## 000
 
@@ -57,48 +150,7 @@ int main(int argc, char **argv)
     return test_success();
 }
 
-
-// #define SIZE 1000
-//int main(int argc, char **argv)
-//{
-//    MIMPI_Init(false);
-//    int const world_rank = MIMPI_World_rank();
-//    const char *delay = getenv("DELAY");
-//    if (delay)
-//    {
-//        int res = setenv(WRITE_VAR, delay, true);
-//        assert(res == 0);
-//    }
-//
-//    uint8_t tab[SIZE];
-//    if (world_rank == 0) {
-//        memset(tab, 42, SIZE);
-//    }
-//    else {
-//        memset(tab, 0, SIZE);
-//    }
-//
-//    ASSERT_MIMPI_OK(MIMPI_Bcast(tab, SIZE, 0));
-//
-//    printf("Number: %d\n", tab[0]);
-//    for (int i = 0; i < SIZE; i++) {
-//        if (tab[i] != 42) {
-//            printf("value: %d, index: %d, jestem %d\n", tab[i], i, world_rank);
-//        }
-//        assert(tab[i] == 42);
-//    }
-//
-//
-//    fflush(stdout);
-//    int res = unsetenv(WRITE_VAR);
-//    assert(res == 0);
-//
-//    MIMPI_Finalize();
-//    return test_success();
-//}
-//
-
-
+ */
 
 
 
@@ -126,41 +178,6 @@ for i in {1..100}
 do
    echo $i
    ./mimpirun 2 ./main
-done
-
-
-
-  set -e
-for i in {1..100000}; do
-    echo "test $i"
-    if ! ./run_test 1000s 2 examples_build/deadlock3; then
-        echo "Test deadlock3 failed"
-        break
-    fi
-done
-
- set -e
-for i in {1..100000}; do
-    echo "test $i"
-    if ! ./run_test 1s 2 examples_build/deadlock1; then
-        echo "Test deadlock1 failed"
-        break
-    elif ! ./run_test 1s 2 examples_build/deadlock2; then
-        echo "Test deadlock2 failed"
-        break
-    elif ! ./run_test 1s 2 examples_build/deadlock3; then
-        echo "Test deadlock3 failed"
-        break
-    elif ! ./run_test 1s 3 examples_build/deadlock4; then
-        echo "Test deadlock4 failed"
-        break
-    elif ! ./run_test 1s 2 examples_build/deadlock5; then
-        echo "Test deadlock5 failed"
-        break
-    elif ! ./run_test 1s 2 examples_build/deadlock6; then
-        echo "Test deadlock6 failed"
-        break
-    fi
 done
 
 
