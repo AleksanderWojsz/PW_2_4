@@ -1,2 +1,2 @@
 set -x
-./run_test 0.4 2 examples_build/big_message
+./run_test 51 2 examples_build/big_message
