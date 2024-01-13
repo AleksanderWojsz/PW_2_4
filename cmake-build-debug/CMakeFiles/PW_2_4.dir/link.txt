@@ -1,0 +1,1 @@
+/usr/bin/cc -g CMakeFiles/PW_2_4.dir/main.c.o -o PW_2_4 
