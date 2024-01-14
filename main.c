@@ -11,52 +11,105 @@
 #include "examples/test.h"
 #include "examples/mimpi_err.h"
 
-#define WRITE_VAR "CHANNELS_WRITE_DELAY"
-#define NS_PER_1_MS 1 ## 000 ## 000
 
-// TODO sprawdzic liczbe czesci dla 497
-#define SIZE 1000
+#define steps 200000 //  60000 // 200000
+#define tagSpace 12
+#define spaceSize 12
+
+unsigned char myRand1(unsigned long long state)
+{
+    state = state * 1664525 + 1013904223;
+    return state >> 20;
+}
+
+unsigned char myRand2(unsigned long long state)
+{
+    state = state * 25214903917 + 11;
+    return state >> 20;
+}
+
+unsigned char myRand3(unsigned long long state)
+{
+    state = state * 16843009 + 826366247;
+    return state >> 20;
+}
+
+char *getData(int tag, int size)
+{
+    char *res = (char *)malloc(size * sizeof(char));
+    assert(res != NULL);
+
+    for (int i = 0; i < size; i++)
+    {
+        res[i] = (myRand1(i) ^ myRand2(tag) ^ myRand3(size));
+    }
+    return res;
+}
+
+void validateData(int tag, int size, char *data)
+{
+    for (int i = 0; i < size; i++)
+    {
+        fflush(stdout);
+        assert(data[i] == (char)(myRand1(i) ^ myRand2(tag) ^ myRand3(size)));
+    }
+}
+
+static unsigned long long st = 2137;
+unsigned char myRand4()
+{
+    st = st * 214013 + 2531011;
+    return st >> 20;
+}
+
 int main(int argc, char **argv)
 {
     MIMPI_Init(false);
+
     int const world_rank = MIMPI_World_rank();
-    const char *delay = getenv("DELAY");
-    if (delay)
+    int const world_size = MIMPI_World_size();
+
+    st ^= world_rank;
+
+    for (int i = 0; i < steps; i++)
     {
-        int res = setenv(WRITE_VAR, delay, true);
-        assert(res == 0);
+        fflush(stdout);
+        if (myRand4() % 4 || i < 20000)
+        {
+            int tar = myRand4() % (world_size - 1);
+            tar += (tar >= world_rank) ? 1 : 0;
+
+            int size = (myRand4() % spaceSize) + 1;
+            int tag = (myRand4() % tagSpace) + 1;
+
+            char *data = getData((tag ^ myRand2(world_rank)), size);
+            ASSERT_MIMPI_OK(MIMPI_Send(data, size, tar, tag));
+
+            free(data);
+        }
+        else
+        {
+            int rec = myRand4() % (world_size - 1);
+            rec += (rec >= world_rank) ? 1 : 0;
+
+            int size = (myRand4() % spaceSize) + 1;
+            int tag = myRand4() % (tagSpace + 1);
+
+            char *data = (char *)malloc(size * sizeof(char));
+            assert(data != NULL);
+            ASSERT_MIMPI_OK(MIMPI_Recv(data, size, rec, tag));
+
+            if (tag != 0)
+                validateData((tag ^ myRand2(rec)), size, data);
+            free(data);
+        }
     }
-
-    uint8_t* tab = malloc(SIZE);
-    if (world_rank == 0) {
-        memset(tab, 42, SIZE);
-    }
-    else {
-        memset(tab, 0, SIZE);
-    }
-
-//    printf("przed bcastem\n");
-    ASSERT_MIMPI_OK(MIMPI_Bcast(tab, SIZE, 0));
-
-//    for (int i = 0; i < SIZE; i++) {
-//        if (tab[i] != 42) {
-//            printf("value: %d, index: %d, jestem %d\n", tab[i], i, world_rank);
-//        }
-//        assert(tab[i] == 42);
-//    }
-
-
+    MIMPI_Barrier();
     fflush(stdout);
-    int res = unsetenv(WRITE_VAR);
-    assert(res == 0);
-
-
-    printf("Number: %d\n", tab[0]);
     MIMPI_Finalize();
-    free(tab);
     return test_success();
 }
-
+// TODO na start 15,1s
 
 // TODO lot_of_messages dziala ale w 5 minut
 // extended pipe closed dziala jak dodałem usuwanie delay po barierze
