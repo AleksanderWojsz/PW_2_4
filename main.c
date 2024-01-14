@@ -14,41 +14,37 @@
 // TODO czy duzo wiadomosci zakleszcza sprawdzanie zakleszczen
 // lista odebranych wiadomosci jest za duza
 
-#define NUMBER 100000
 int main(int argc, char **argv)
 {
-//    MIMPI_Init(false);
-    MIMPI_Init(true);
-
+    MIMPI_Init(false);
     int const world_rank = MIMPI_World_rank();
-    int partner_rank = (world_rank / 2 * 2) + 1 - world_rank % 2;
 
 
-    char number = '2';
 
-    for (int i = 0; i < NUMBER; i++) {
-        if (world_rank % 2 == 0) {
-            ASSERT_MIMPI_OK(MIMPI_Recv(&number, 1, partner_rank, 17));
-        }
-        else if (world_rank % 2 == 1) {
-            ASSERT_MIMPI_OK(MIMPI_Send(&number, 1, partner_rank, 17));
-        }
-    }
+    char number = 0;
+    if (world_rank == 1)
+        number = 1;
+    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 1));
+    assert(number == 1);
+
+    if (world_rank == 3)
+        number = 3;
+    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 3));
+
+
+    printf("Number: %d\n", number);
+    fflush(stdout);
+
 
     MIMPI_Finalize();
-    printf("ok %d\n", world_rank);
-
-    return 0;
+    return test_success();
 }
 
 
+// ./mimpirun 5 ./main 100000 3
 
-
-
-// TODO lot_of_messages dziala ale w 5 minut
 // extended pipe closed dziala jak dodałem usuwanie delay po barierze
 
-// disturbed_send_recv czas
 // big_message.sh valgrind czas
 // obstruction.sh valgrind czas
 // deadlock1.sh valgrind czas
@@ -68,7 +64,6 @@ do
    echo $i
    ./mimpirun 16 ./main
 done
-
 
 
 ./update_public_repo

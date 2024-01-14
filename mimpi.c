@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #define POM_PIPES 90
 #define OUT_OF_MPI_BLOCK (-1)
@@ -850,9 +851,8 @@ void children_wake_up_and_send_data(int w, int i, int n, void* data, int count) 
 int read_message_barrier(int read_descriptor, void** result_buffer) {
 
     free(*result_buffer);
-    long long int result_buffer_size = 496;
+    long long int result_buffer_size = 0;
     *result_buffer = malloc(result_buffer_size);
-    assert(result_buffer);
 
     void* buffer = malloc(512);  // Bufor do przechowywania fragmentów i metadanych
     assert(buffer);
@@ -881,15 +881,12 @@ int read_message_barrier(int read_descriptor, void** result_buffer) {
         memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
 
 
-        // Zapisywanie danych z fragmentu do głównego bufora danych
+        result_buffer_size += current_message_size;
+        *result_buffer = realloc(*result_buffer, result_buffer_size);
 
+        // Zapisywanie danych z fragmentu do głównego bufora danych
         memcpy(*result_buffer + received, buffer + sizeof(int) * META_INFO_SIZE, current_message_size);
         received += current_message_size;
-
-        if (ile < z_ilu) { // Jak to nie koniec czytania to powiększamy bufor
-            result_buffer_size += 496;
-            *result_buffer = realloc(*result_buffer, result_buffer_size);
-        }
     }
 
     // nie robimy free result_buffer to ten jest potrzeny poza funkcją
@@ -1047,19 +1044,25 @@ MIMPI_Retcode MIMPI_Reduce(
         return MIMPI_SUCCESS;
     }
 
-    // Wywołujemy barierę, żeby sprawdzić czy wszyscy przyjdą, i nie zakleszczymy się na wysyłaniu dużej tablicy
-    // Moja złożoność dla count = 40 000 zaoszczędza 76 czasów działania zwykłej bariery, więc możemy sobie pozwolić na dołożenie jednej
+    // Wywołujemy barierę, żeby sprawdzić, czy wszyscy przyjdą, i nie zakleszczymy się na wysyłaniu dużej tablicy
+    // Moja złożoność dla count = 4000 zaoszczędza 7 czasów działania zwykłej bariery, więc możemy sobie pozwolić na dołożenie jednej
     if (count > 4000) {
-        MIMPI_Barrier();
+        void* foo_data = malloc(512);
+        assert(foo_data);
+        memset(foo_data, 0, 512);
+
+        MIMPI_Retcode ret = MIMPI_Bcast(foo_data, 1, root);
+        free(foo_data);
+
+        if (ret != MIMPI_SUCCESS) {
+            return ret;
+        }
     }
 
     if (someone_already_finished == true) {
         return MIMPI_ERROR_REMOTE_FINISHED;
     }
     no_of_barrier++; // To musi być po, bo przecież nie weszliśmy
-
-    int fragment_tag = 0;
-    int foo_count = 0;
 
     void* array_1 = malloc(count);
     assert(array_1);
@@ -1074,31 +1077,27 @@ MIMPI_Retcode MIMPI_Reduce(
     int n = world_size;
     int w = world_rank;
 
+    int l = 2 * ((w +i) % n) + 1; // lewe dziecko jakby root = 0
+    int p = 2 * ((w +i) % n) + 2;
+    int l_send = (2 * w + i + 1) % n;
+    int p_send = (2 * w + i + 2) % n;
+
     // Wysyłany tag oznacza numer nadawcy, żeby czytający wiedział, od kogo jest dana porcja z pipe'a
 
-    if (world_rank == root || 2 * ((w +i) % n) + 1 < world_size) { // jesteśmy korzeniem lub mamy dziecko
+    if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
-        if (2 * ((w +i) % n) + 1 < world_size && 2 * ((w +i) % n) + 2 >= world_size) { // mamy tylko lewe dziecko
-            read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &array_1, &foo_count, &fragment_tag); // czekamy na pierwszą tablicę
-            while (fragment_tag < 0) {
-                if (no_of_barrier == -fragment_tag - 1) {
-                    someone_already_finished = true;
-                }
-                else if (no_of_barrier == -fragment_tag) {
-                    free(array_1);
-                    free(array_2);
-                    free(reduced_array);
-                    someone_already_finished = true;
-                    no_of_barrier--;
-                    return MIMPI_ERROR_REMOTE_FINISHED;
-                }
-                read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &array_1, &foo_count, &fragment_tag); // czekamy na pierwszą tablicę
+        if (l < world_size && p >= world_size) { // mamy tylko lewe dziecko
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &array_1)) {
+                free(array_1);
+                free(array_2);
+                free(reduced_array);
+                no_of_barrier--; // TODO czy wszędzie to zmniejszam?
+                return MIMPI_ERROR_REMOTE_FINISHED;
             }
-
 
             reduce(reduced_array, send_data, array_1, count, op);
         }
-        else if (2 * ((w +i) % n) + 1 < world_size && 2 * ((w +i) % n) + 2 < world_size) { // mamy dwójkę dzieci
+        else if (l < world_size && p < world_size) { // mamy dwójkę dzieci
 
             // Odczytana część może być od dowolnego z dzieci
             int max_message_size = 512 - sizeof(int) * META_INFO_SIZE;
@@ -1179,62 +1178,42 @@ MIMPI_Retcode MIMPI_Reduce(
     free(reduced_array);
 
 
-
     // Czekamy aż root obudzi wszystkich
-    void* foo_message = malloc(512);
-    assert(foo_message);
-    memset(foo_message, -99, 512);
+    void* wake_up = malloc(512);
+    assert(wake_up);
+    memset(wake_up, 0, 512);
     void* foo_buffer = malloc(512);
+    memset(foo_buffer, 0, 512);
     assert(foo_buffer);
 
-    if (world_rank == root) { // jesteśmy korzeniem
-        children_wake_up_and_send_data(w, i, n, foo_message, 100);
-    }
-    else if (2 * ((w +i) % n) + 1 < world_size) { // jesteśmy rodzicem niekorzeniem
+    // Wysyłamy wiadomość od roota
+    if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
 
-        // czekamy na wiadomosc od rodzica
-        read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &foo_buffer, &foo_count, &fragment_tag);
-
-        while (fragment_tag < 0) {
-            if (no_of_barrier == -fragment_tag - 1) {
-                someone_already_finished = true;
-            }
-            else if (no_of_barrier == -fragment_tag) {
+        if (world_rank != root) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer)) {
+                free(wake_up);
                 free(foo_buffer);
-                free(foo_message);
-                someone_already_finished = true;
-                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
-
-            read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &foo_buffer, &foo_count, &fragment_tag); // czekamy na pierwszą tablicę
         }
 
-        children_wake_up_and_send_data(w, i, n, foo_message, 100);
+        if (l < world_size) {
+            send_message_to_pipe(get_barrier_write_desc(l_send), wake_up, 100, 0, false, 10);
+        }
+        if (p < world_size) {
+            send_message_to_pipe(get_barrier_write_desc(p_send), wake_up, 100, 0, false, 10);
+        }
     }
-    else { // jesteśmy liściem
-
-        // czekamy na wiadomosc od rodzica
-        read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &foo_buffer, &foo_count, &fragment_tag);
-
-        while (fragment_tag < 0) {
-            if (no_of_barrier == -fragment_tag - 1) {
-                someone_already_finished = true;
-            }
-            else if (no_of_barrier == -fragment_tag) {
-                free(foo_buffer);
-                free(foo_message);
-                someone_already_finished = true;
-                no_of_barrier--;
-                return MIMPI_ERROR_REMOTE_FINISHED;
-            }
-
-            read_message_from_pom_pipe(get_barrier_read_desc(world_rank), &foo_buffer, &foo_count, &fragment_tag); // czekamy na pierwszą tablicę
+    else { // jestesmy lisciem
+        if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer)) {
+            free(wake_up);
+            free(foo_buffer);
+            return MIMPI_ERROR_REMOTE_FINISHED;
         }
     }
 
-    free(foo_message);
     free(foo_buffer);
+    free(wake_up);
 
     return MIMPI_SUCCESS;
 }
