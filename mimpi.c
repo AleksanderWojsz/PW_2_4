@@ -55,6 +55,46 @@ void list_add(Message **head, void const *data, int count, int source, int tag) 
     }
 }
 
+
+typedef struct To_delete {
+    Message* message;
+    struct To_delete *next;
+} To_delete;
+
+To_delete *to_delete_head = NULL;
+
+void list_add_to_delete(To_delete **head, Message* message) {
+    To_delete *new_message = malloc(sizeof(To_delete));
+    assert(new_message);
+
+    new_message->message = message;
+    new_message->next = NULL;
+
+    if (*head == NULL) {
+        *head = new_message;
+    } else {
+        To_delete *current = *head;
+        while (current->next != NULL) {
+            current = current->next;
+        }
+        current->next = new_message;
+    }
+}
+
+void list_clear_to_delete(To_delete **head) {
+    To_delete *current = *head;
+    To_delete *next;
+    while (current != NULL) {
+        next = current->next;
+        free(current->message->data);
+        free(current->message);
+        free(current);
+        current = next;
+    }
+    *head = NULL;
+}
+
+
 // Znajdowanie pierwszego elementu o wskazanym count, source, tag (lub dowolny tak jak nasz tag == 0)
 Message *list_find(Message *head, int count, int source, int tag) {
     Message *current = head;
@@ -66,33 +106,6 @@ Message *list_find(Message *head, int count, int source, int tag) {
         current = current->next;
     }
     return NULL; // Nie znaleziono elementu
-}
-
-// TODO !!! Trzeba zwolnic pamiec z wiadomosci
-Message *list_find_and_remove(Message **head, int count, int source, int tag) {
-    Message *current = *head;
-    Message *previous = NULL;
-    while (current != NULL) {
-        if ((current->count == count && current->source == source && (current->tag == tag || tag == 0)) ||
-            (current->source == source && current->tag < 0)) { // Wiadomość specjalna od konkretnego nadawcy
-            if (previous == NULL) {
-                // Usuwamy pierwszy element
-                *head = current->next;
-            } else {
-                // Usuwamy element w środku lub na końcu
-                previous->next = current->next;
-            }
-            return current;
-        }
-        previous = current;
-        current = current->next;
-    }
-    return NULL; // Nie znaleziono elementu
-}
-
-void free_message(Message *message) {
-    free(message->data);
-    free(message);
 }
 
 // Usuwanie pierwszego elementu o wskazanym count, source, tag
@@ -108,8 +121,7 @@ void list_remove(Message **head, int count, int source, int tag) {
                 // Usuwamy element w środku lub na końcu
                 previous->next = current->next;
             }
-            free(current->data);
-            free(current);
+            list_add_to_delete(&to_delete_head, current);
             return;
         }
         previous = current;
@@ -682,6 +694,7 @@ void MIMPI_Finalize() {
     list_clear(&received_list);
     list_clear(&sent_messages);
     list_clear(&odczytane_wiadomosci_deadlock);
+    list_clear_to_delete(&to_delete_head);
 
     // wysyłamy wszystkim innym wiadomość z tagiem OUT_OF_MPI_BLOCK (-1) oznaczającą, że skończyliśmy
     for (int i = 0; i < MIMPI_World_size(); i++) {
@@ -761,14 +774,6 @@ MIMPI_Retcode MIMPI_Send(
     return result;
 }
 
-typedef struct Message2 {
-    void *data;
-    int count;
-    int source;
-    int tag;
-    struct Message2 *next;
-} Message2;
-
 MIMPI_Retcode MIMPI_Recv(
         void* data,
         int count,
@@ -790,24 +795,22 @@ MIMPI_Retcode MIMPI_Recv(
 
     // Sprawdzamy, czy taka wiadomość była odebrana już wcześniej
     // list_find znajdzie też wiadomości z tagiem 0 lub dowolną specjalną od tego nadawcy
-    Message *message = list_find_and_remove(&received_list, count, source, tag);
-    ASSERT_ZERO(pthread_mutex_unlock(&mutex_pipes));
+    Message *message = list_find(received_list, count, source, tag);
     if (message != NULL) {
 
         if (message->tag < 0) { // Wiadomość specjalna
             if (message->tag == -1) {
-                ASSERT_ZERO(pthread_mutex_lock(&mutex_pipes));
                 finished[source] = true;
+                list_remove(&received_list, count, source, tag); // Usunięcie wiadomości z listy
                 ASSERT_ZERO(pthread_mutex_unlock(&mutex_pipes));
                 someone_already_finished = true;
-                free_message(message);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
 
         memcpy(data, message->data, message->count); // Przepisanie danych do bufora użytkownika
-        free(message->data);
-        free(message);
+        list_remove(&received_list, count, source, tag); // Usunięcie wiadomości z listy
+        ASSERT_ZERO(pthread_mutex_unlock(&mutex_pipes));
 
         if (deadlock_detection && is_in_MPI_block(source) == true && tag >= 0) {
             notify_that_message_received(source, count, tag);
@@ -816,7 +819,6 @@ MIMPI_Retcode MIMPI_Recv(
         return MIMPI_SUCCESS;
     }
 
-    ASSERT_ZERO(pthread_mutex_lock(&mutex_pipes));
     // Nie znaleźliśmy wiadomości, więc czekamy na nią
     waiting_count = count;
     waiting_source = source;
