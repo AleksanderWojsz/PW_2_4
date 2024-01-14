@@ -1,6 +1,3 @@
-/**
- * This file is for implementation of MIMPI library.
- * */
 #include "channel.h"
 #include "mimpi.h"
 #include "mimpi_common.h"
@@ -9,9 +6,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdio.h>
-#include <sys/ioctl.h>
-#include <dirent.h>
 
 #define POM_PIPES 90
 #define OUT_OF_MPI_BLOCK (-1)
@@ -166,10 +160,10 @@ int MIMPI_World_rank() {
 }
 
 int check_arguments_correctness(int other_process_rank) {
-    if (MIMPI_World_rank() == other_process_rank) {
+    if (world_rank == other_process_rank) {
         return MIMPI_ERROR_ATTEMPTED_SELF_OP;
     }
-    else if (other_process_rank >= MIMPI_World_size() || other_process_rank < 0) {
+    else if (other_process_rank >= world_size || other_process_rank < 0) {
         return MIMPI_ERROR_NO_SUCH_RANK;
     }
     else {
@@ -179,26 +173,26 @@ int check_arguments_correctness(int other_process_rank) {
 
 void notify_iam_out() {
     int is_active[MAX_N];
-    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * MIMPI_World_size()));
-    is_active[MIMPI_World_rank()] = 0;
-    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * MIMPI_World_size()));
+    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * world_size));
+    is_active[world_rank] = 0;
+    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * world_size));
 }
 
 bool is_in_MPI_block(int nr) {
 
-    if (nr >= MIMPI_World_size()) {
+    if (nr >= world_size) {
         return false;
     }
 
     int is_active[MAX_N];
-    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * MIMPI_World_size()));
+    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * world_size));
     bool result = (is_active[nr] == 1);
-    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * MIMPI_World_size()));
+    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * world_size));
     return result;
 }
 
 int MIMPI_get_read_desc(int src, int dest) {
-    return src * MIMPI_World_size() * 2 + 20 + 2 * POM_PIPES + dest * 2;
+    return src * world_size * 2 + 20 + 2 * POM_PIPES + dest * 2;
 }
 
 int MIMPI_get_write_desc(int src, int dest) {
@@ -238,8 +232,8 @@ int get_deadlock_counter_write_desc(int rank) {
     return get_deadlock_counter_read_desc(rank) + 1;
 }
 
-void notify_that_message_received(int who_sent_it_to_us, int count, int tag) {
-    int message[3];
+void notify_that_message_received(int who_sent_it_to_us, int count, int tag) { // Do deadlock
+    int message[3]; // dane odebranej wiadomości
     message[0] = world_rank;
     message[1] = count;
     message[2] = tag;
@@ -294,7 +288,7 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
         if (no_of_messages_to_remove > 0) {
             rodzic_czeka_na_odczytanie_wszystkich = true;
 
-            ASSERT_ZERO(pthread_mutex_lock(&unread_messages_sleeping)); // jak są jeszcze jakies nieodbrane wiadomości to czekamy
+            ASSERT_ZERO(pthread_mutex_lock(&unread_messages_sleeping)); // jak są jeszcze jakieś nieodebrane wiadomości to czekamy
         }
 
         ASSERT_SYS_OK(chrecv(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int))); // Jako mutex
@@ -420,12 +414,11 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
     }
 }
 
-// Przekazany bufor ma mieć rozmiar 496B // TODO zmienic na pusty bufor
 void read_message_from_pom_pipe(int descriptor, void** result_buffer, int* count, int* tag) {
 
+    free(*result_buffer);
     long long int result_buffer_size = 496;
-    free(*result_buffer); // TODO dodalem
-    *result_buffer = malloc(result_buffer_size); // TODO dodalem
+    *result_buffer = malloc(result_buffer_size);
     assert(result_buffer);
 
     void* buffer = malloc(512);  // Bufor do przechowywania fragmentów i metadanych
@@ -479,7 +472,7 @@ void *read_messages_from_source(void *src) {
         assert(read_message);
         int fragment_tag = 0;
         int count = 0;
-        read_message_from_pom_pipe(MIMPI_get_read_desc(source, MIMPI_World_rank()), &read_message, &count, &fragment_tag);
+        read_message_from_pom_pipe(MIMPI_get_read_desc(source, world_rank), &read_message, &count, &fragment_tag);
 
 
 
@@ -496,9 +489,7 @@ void *read_messages_from_source(void *src) {
             waiting_source = -10;
             waiting_tag = -10;
 
-            // TODO sprawdzenie deadlocka robimy tylko jak tag jest >= 0, wiec wątek nie będzie czekał konkretnie na specjalną wiadomość
-            // TODO zakładamy że z wiadomościami specjalnymi nie ma zakleszczeń
-            if (deadlock_detection == true && fragment_tag >= 0) {
+            if (deadlock_detection == true && fragment_tag >= 0) { // zakładamy że z wiadomościami specjalnymi nie ma zakleszczeń
                 void *message = malloc(512);
                 assert(message);
                 memset(message, 0, 512);
@@ -560,14 +551,14 @@ pthread_t threads[16];
 pthread_t czytajacy_odczytane_wiadomosci_deadlock;
 
 void MIMPI_Init(bool enable_deadlock_detection) {
+    channels_init();
 
     if (enable_deadlock_detection) {
         deadlock_detection = true;
     }
 
-    channels_init();
-    MIMPI_World_size();
     MIMPI_World_rank();
+    MIMPI_World_size();
 
     ASSERT_ZERO(pthread_mutex_init(&mutex_pipes, NULL));
     ASSERT_ZERO(pthread_mutex_init(&parent_sleeping, NULL));
@@ -576,8 +567,8 @@ void MIMPI_Init(bool enable_deadlock_detection) {
     ASSERT_ZERO(pthread_mutex_lock(&unread_messages_sleeping)); // zmniejszanie licznika do 0
 
     // Tworzenie po jednym wątku na każdy pipe
-    for (int i = 0; i < MIMPI_World_size(); i++) {
-        if (i != MIMPI_World_rank()) {
+    for (int i = 0; i < world_size; i++) {
+        if (i != world_rank) {
             int *source = malloc(sizeof(int));
             assert(source);
             *source = i;
@@ -631,14 +622,21 @@ int send_message_to_pipe(int descriptor, void const *data, int count, int tag, b
     return MIMPI_SUCCESS;
 }
 
-void send_message_to_pipe_barrier(int descriptor, void* data, int count);
 void MIMPI_Finalize() {
 
     notify_iam_out(); // Zabraniamy wysłać do nas wiadomości poprzez MIMPI_SEND
 
+    // wysyłamy wszystkim innym wiadomość z tagiem OUT_OF_MPI_BLOCK (-1) oznaczającą, że skończyliśmy
+    for (int i = 0; i < world_size; i++) {
+        if (i != world_rank && is_in_MPI_block(i) == true) {
+            int message = 0;
+            MIMPI_Send(&message, 1, i, OUT_OF_MPI_BLOCK);
+        }
+    }
+
     if (deadlock_detection) {
-        for (int i = 0; i < MIMPI_World_size(); i++) { // Wysyłamy do pipe'ów od deadlock, że skonczyliśmy i nie będzie z nami deadlocka już nigdy
-            if (i != MIMPI_World_rank()) {
+        for (int i = 0; i < world_size; i++) { // Wysyłamy do pipe'ów od deadlock, że skonczyliśmy i nie będzie z nami deadlocka już nigdy
+            if (i != world_rank) {
                 void *message = malloc(512);
                 assert(message);
                 int tag = -1;
@@ -650,10 +648,6 @@ void MIMPI_Finalize() {
             }
         }
 
-        // TODO powiedzieliśmy już że nie mozna wysyłać do nas wiadomości, teraz kończymy wątek
-//
-//        MIMPI_Barrier();
-
         int message[3];
         message[0] = 10;
         message[1] = 10;
@@ -662,31 +656,20 @@ void MIMPI_Finalize() {
         pthread_join(czytajacy_odczytane_wiadomosci_deadlock, NULL);
     }
 
-
     // Wysyłamy wiadomości z tagiem -1 do samych siebie przez wszystkie pipe'y, żeby nasze wątki wiedziały, że mają się zakończyć
-    for (int i = 0; i < MIMPI_World_size(); i++) {
-        if (i != MIMPI_World_rank()) {
-            int foo1 = 1;
-            int tag = -1;
-            int message_size = sizeof(int) * META_INFO_SIZE + sizeof(int);
+    for (int i = 0; i < world_size; i++) {
+        if (i != world_rank) {
             void *message = malloc(512);
             assert(message);
             memset(message, 0, 512);
-            memcpy(message + sizeof(int) * 0, &foo1, sizeof(int));
-            memcpy(message + sizeof(int) * 1, &foo1, sizeof(int));
-            memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
-            memcpy(message + sizeof(int) * 3, &message_size, sizeof(int));
-            memcpy(message + sizeof(int) * 4, &foo1, sizeof(int));
-
-            ASSERT_SYS_OK(chsend(MIMPI_get_write_desc(i, MIMPI_World_rank()), message, 512));
-
+            send_message_to_pipe(MIMPI_get_write_desc(i, world_rank), message, 100, -1, false, i);
             free(message);
         }
     }
 
     // Czekanie na zakończenie wszystkich wątków
-    for (int i = 0; i < MIMPI_World_size(); i++) {
-        if (i != MIMPI_World_rank()) {
+    for (int i = 0; i < world_size; i++) {
+        if (i != world_rank) {
             pthread_join(threads[i], NULL);
         }
     }
@@ -696,27 +679,15 @@ void MIMPI_Finalize() {
     list_clear(&odczytane_wiadomosci_deadlock);
     list_clear_to_delete(&to_delete_head);
 
-    // wysyłamy wszystkim innym wiadomość z tagiem OUT_OF_MPI_BLOCK (-1) oznaczającą, że skończyliśmy
-    for (int i = 0; i < MIMPI_World_size(); i++) {
-        if (i != MIMPI_World_rank() && is_in_MPI_block(i) == true) {
-            int message = 0;
-            MIMPI_Send(&message, 1, i, OUT_OF_MPI_BLOCK);
-        }
-    }
-
     pthread_mutex_destroy(&mutex_pipes);
     pthread_mutex_destroy(&parent_sleeping);
     pthread_mutex_destroy(&unread_messages_sleeping);
 
-    for (int i = 0; i < MIMPI_World_size(); i++) {
-        for (int j = 0; j < MIMPI_World_size(); j++) {
+    for (int i = 0; i < world_size; i++) {
+        for (int j = 0; j < world_size; j++) {
             ASSERT_SYS_OK(close(MIMPI_get_read_desc(i, j)));
             ASSERT_SYS_OK(close(MIMPI_get_write_desc(i, j)));
         }
-    }
-
-
-    for (int i = 0; i < world_size; i++) {
         ASSERT_SYS_OK(close(get_barrier_read_desc(i)));
     }
 
@@ -724,8 +695,8 @@ void MIMPI_Finalize() {
         ASSERT_SYS_OK(close(i));
     }
 
-    for (int i = 0; i < MIMPI_World_size(); i++) { // Wysyłamy do pipe'ów od babiery, wiadomość z tagiem -1, że nas nie będzie
-        if (i != MIMPI_World_rank()) {
+    for (int i = 0; i < world_size; i++) { // Wysyłamy do pipe'ów od babiery, wiadomość z tagiem -1, że nas nie będzie
+        if (i != world_rank) {
 
             void *message = malloc(512);
             assert(message);
@@ -769,9 +740,7 @@ MIMPI_Retcode MIMPI_Send(
         list_add(&sent_messages, data, count, destination, tag);
     }
 
-    int result = send_message_to_pipe(MIMPI_get_write_desc(MIMPI_World_rank(), destination), data, count, tag, true, destination);
-
-    return result;
+    return send_message_to_pipe(MIMPI_get_write_desc(world_rank, destination), data, count, tag, true, destination);
 }
 
 MIMPI_Retcode MIMPI_Recv(
@@ -878,31 +847,6 @@ void children_wake_up_and_send_data(int w, int i, int n, void* data, int count) 
     }
 }
 
-bool handle_fragment_tags(int* fragment_tag, void** buffer, int* foo_count, int read_descriptor) {
-    while (*fragment_tag < 0) {
-        if (no_of_barrier == -*fragment_tag - 1) {
-            someone_already_finished = true;
-        }
-        else if (no_of_barrier == -*fragment_tag) {
-            free(*buffer);
-            someone_already_finished = true;
-            no_of_barrier--;
-            return true;
-        }
-
-        read_message_from_pom_pipe(read_descriptor, buffer, foo_count, fragment_tag); // Czekamy na dowolną wiadomość
-    }
-    return false;
-}
-
-
-
-
-
-
-
-
-
 int read_message_barrier(int read_descriptor, void** result_buffer) {
 
     free(*result_buffer);
@@ -920,7 +864,6 @@ int read_message_barrier(int read_descriptor, void** result_buffer) {
         // Odbieranie fragmentu
         ASSERT_SYS_OK(chrecv(read_descriptor, buffer, 512));
         memcpy(&fragment_tag, buffer + sizeof(int) * 2, sizeof(int));
-//        printf("Jestem %d i odczytalem tag %d\n", world_rank, fragment_tag);
         if (no_of_barrier == -fragment_tag - 1) {
             someone_already_finished = true;
             continue;
@@ -954,41 +897,6 @@ int read_message_barrier(int read_descriptor, void** result_buffer) {
     return false;
 }
 
-void send_message_to_pipe_barrier(int descriptor, void* data, int count) {
-
-    // Dzielimy wiadomość na części rozmiaru ile + z_ilu + tag + current_message_size + wiadomość = 512B
-    int max_message_size = 512 - sizeof(int) * META_INFO_SIZE;
-    int liczba_czesci = (int)(((long long int)count + ((long long int)max_message_size - 1)) / (long long int)max_message_size); // ceil(A/B) use (A + (B-1)) / B
-
-    int tag = 0;
-    int nr_czesci = 1;
-
-    // tworzenie wiadomosci
-    for (int i = 0; i < liczba_czesci; i++) {
-
-        int current_message_size = max_message_size;
-        if (i == liczba_czesci - 1) { // ostatnia część wiadomości
-            current_message_size = count - (liczba_czesci - 1) * max_message_size;
-        }
-
-        void *message = malloc(512);
-        assert(message);
-        memset(message, 0, 512);
-
-        memcpy(message + sizeof(int) * 0, &nr_czesci, sizeof(int));
-        memcpy(message + sizeof(int) * 1, &liczba_czesci, sizeof(int));
-        memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
-        memcpy(message + sizeof(int) * 3, &current_message_size, sizeof(int));
-        memcpy(message + sizeof(int) * 4, data + i * max_message_size, current_message_size);
-
-        // Wysyłanie wiadomości
-        ASSERT_SYS_OK(chsend(descriptor, message, 512));
-        nr_czesci++;
-        free(message);
-    }
-}
-
-
 MIMPI_Retcode MIMPI_Bcast(
         void *data,
         int count,
@@ -1019,46 +927,38 @@ MIMPI_Retcode MIMPI_Bcast(
 
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
-//        printf("Ala1, %d\n", world_rank);
         if (l < world_size) { // mamy lewe dziecko
 
-//            printf("Ala2, %d\n", world_rank);
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
         if (p < world_size) { // mamy prawe dziecko
-//            printf("Ala3, %d\n", world_rank);
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
 
-
         if (world_rank != root) { // budzimy rodzica
-//            printf("Ala4, %d\n", world_rank);
             void *wake_up = malloc(512);
             memset(wake_up, 0, 512);
-            send_message_to_pipe_barrier(get_barrier_write_desc(find_parent(root)), wake_up, 100);
+            send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, 0, false, 10);
             free(wake_up);
         }
     }
     else { // jesteśmy liściem
-//        printf("Ala5, %d\n", world_rank);
         void* wake_up = malloc(512);
         memset(wake_up, 0, 512);
-        send_message_to_pipe_barrier(get_barrier_write_desc(find_parent(root)), wake_up, 100);
+        send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, 0, false, 10);
         free(wake_up);
     }
 
     // Wysyłamy wiadomość od roota
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
-//        printf("Ala6, %d\n", world_rank);
 
         if (world_rank != root) {
-//            printf("Ala7, %d\n", world_rank);
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
@@ -1067,49 +967,24 @@ MIMPI_Retcode MIMPI_Bcast(
         }
 
         if (l < world_size) {
-//            printf("Ala8, zapisuje do pipe'a %d, %d\n", get_barrier_write_desc(l_send), world_rank);
-            send_message_to_pipe_barrier(get_barrier_write_desc(l_send), data, count);
+            send_message_to_pipe(get_barrier_write_desc(l_send), data, count, 0, false, 10);
         }
         if (p < world_size) {
-//            printf("Ala9, %d\n", world_rank);
-            send_message_to_pipe_barrier(get_barrier_write_desc(p_send), data, count);
+            send_message_to_pipe(get_barrier_write_desc(p_send), data, count, 0, false, 10);
         }
     }
     else { // jestesmy lisciem
-//        printf("Ala10, czytam z pipe'a %d, %d\n", get_barrier_read_desc(world_rank), world_rank);
         if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
             free(buffer);
-//            printf("Ala10.1, %d\n", world_rank);
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
-//        printf("Ala10.2, %d\n", world_rank);
         memcpy(data, buffer, count);
     }
-
-
-//    printf("Ala11, %d\n", world_rank);
 
     free(buffer);
 
     return MIMPI_SUCCESS;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 // Korzystamy tylko z synchronizującego efektu Bcast
 MIMPI_Retcode MIMPI_Barrier() {
@@ -1174,7 +1049,7 @@ MIMPI_Retcode MIMPI_Reduce(
 
     // Wywołujemy barierę, żeby sprawdzić czy wszyscy przyjdą, i nie zakleszczymy się na wysyłaniu dużej tablicy
     // Moja złożoność dla count = 40 000 zaoszczędza 76 czasów działania zwykłej bariery, więc możemy sobie pozwolić na dołożenie jednej
-    if (count > 40000) {
+    if (count > 4000) {
         MIMPI_Barrier();
     }
 
