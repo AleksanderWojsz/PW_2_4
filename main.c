@@ -25,7 +25,11 @@ int main(int argc, char **argv)
     if (world_rank == 1)
         number = 1;
     ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 1));
-    assert(number == 1);
+
+    if (number != 1) {
+        printf("%d Number: %d\n", world_rank, number);
+        assert(number == 1);
+    }
 
     if (world_rank == 3)
         number = 3;
