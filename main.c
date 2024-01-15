@@ -12,76 +12,52 @@
 #include "examples/test.h"
 #include "examples/mimpi_err.h"
 
-#define SIZE 20000
-// TODO bcast rozne rooty big message
+#define WRITE_VAR "CHANNELS_WRITE_DELAY"
+
 int main(int argc, char **argv)
 {
+    size_t data_size = 1;
+    if (argc > 1)
+    {
+        data_size = atoi(argv[1]);
+    }
+
     MIMPI_Init(false);
     int const world_rank = MIMPI_World_rank();
 
-    char data[SIZE] = {0};
-    if (world_rank == 0) {
-        for (int i = 0; i < SIZE; ++i) {
-            data[i] = 1;
-        }
-    }
-    ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, 0));
-    for (int i = 0; i < SIZE; i += 101) {
-        if (data[i] != 1) {
-            assert(data[i] == 1);
-        }
+    const char *delay = getenv("DELAY");
+    if (delay)
+    {
+        int res = setenv(WRITE_VAR, delay, true);
+        assert(res == 0);
     }
 
-    if (world_rank == 3) {
-        for (int i = 0; i < SIZE; ++i) {
-            data[i] = 3;
-        }
+    uint8_t *data = malloc(data_size);
+    assert(data);
+    memset(data, 1, data_size);
+
+    if (world_rank == 0)
+    {
+        uint8_t *recv_data = malloc(data_size);
+        assert(recv_data);
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, 0));
+        for (int i = 1; i < data_size; ++i)
+            test_assert(recv_data[i] == recv_data[0]);
+        printf("Number: %d\n", recv_data[0]);
+        fflush(stdout);
+        free(recv_data);
     }
-    ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, 3));
-    for (int i = 0; i < SIZE; i += 101) {
-        assert(data[i] == 3);
+    else
+    {
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, 0));
     }
+    test_assert(data[0] == 1);
+    for (int i = 1; i < data_size; ++i)
+        test_assert(data[i] == data[0]);
+    free(data);
 
-    for (int i = 0; i < 16; i++) {
-        if (world_rank == i) {
-            for (int j = 0; j < SIZE; ++j) {
-                data[j] = i;
-            }
-        }
-
-        ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, i));
-        for (int j = 0; j < SIZE; j += 101) {
-            assert(data[j] == i);
-        }
-    }
-
-
-    for (int i = 0; i < 16; i++) {
-        for (int j = 0; j < 16; j++) {
-            int root = i;
-            if (world_rank == root) {
-                // Fill the entire array with the same number
-                for (int k = 0; k < SIZE; ++k) {
-                    data[k] = root;
-                }
-            }
-            ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, root));
-            for (int k = 0; k < SIZE; k += 101) {
-                assert(data[k] == root);
-            }
-
-            root = j;
-            if (world_rank == root) {
-                for (int k = 0; k < SIZE; ++k) {
-                    data[k] = root;
-                }
-            }
-            ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, root));
-            for (int k = 0; k < SIZE; k += 101) {
-                assert(data[k] == root);
-            }
-        }
-    }
+    int res = unsetenv(WRITE_VAR);
+    assert(res == 0);
 
     MIMPI_Finalize();
     return test_success();

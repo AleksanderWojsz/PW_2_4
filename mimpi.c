@@ -1065,6 +1065,52 @@ void reduce(void* reduced_array, void const* array_1, void const* array_2, int c
     }
 }
 
+int read_message_reduce(int read_descriptor, void** result_buffer) {
+
+    free(*result_buffer);
+    long long int result_buffer_size = 0;
+    *result_buffer = malloc(result_buffer_size);
+
+    void* buffer = malloc(512);  // Bufor do przechowywania fragmentów i metadanych
+    assert(buffer);
+    int received = 0;  // Ile bajtów danych już otrzymaliśmy
+    int ile = 0, z_ilu = 1, fragment_tag, current_message_size;
+
+    while (ile < z_ilu) {
+
+        // Odbieranie fragmentu
+        ASSERT_SYS_OK(chrecv(read_descriptor, buffer, 512));
+        memcpy(&fragment_tag, buffer + sizeof(int) * 2, sizeof(int));
+        if (no_of_barrier == -fragment_tag - 1) {
+            someone_already_finished = true;
+            continue;
+        }
+        else if (no_of_barrier == -fragment_tag) {
+            free(buffer);
+            someone_already_finished = true;
+            no_of_barrier--;
+            return true;
+        }
+
+        // Rozpakowywanie metadanych z bufora
+        memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
+        memcpy(&z_ilu, buffer + sizeof(int) * 1, sizeof(int));
+        memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
+
+
+        result_buffer_size += current_message_size;
+        *result_buffer = realloc(*result_buffer, result_buffer_size);
+
+        // Zapisywanie danych z fragmentu do głównego bufora danych
+        memcpy(*result_buffer + received, buffer + sizeof(int) * META_INFO_SIZE, current_message_size);
+        received += current_message_size;
+    }
+
+    // nie robimy free result_buffer to ten jest potrzeny poza funkcją
+    free(buffer);
+    return false;
+}
+
 MIMPI_Retcode MIMPI_Reduce(
         void const *send_data,
         void *recv_data,
@@ -1125,7 +1171,7 @@ MIMPI_Retcode MIMPI_Reduce(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
         if (l < world_size && p >= world_size) { // mamy tylko lewe dziecko
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &array_1, l_send, p_send)) {
+            if (read_message_reduce(get_barrier_read_desc(world_rank), &array_1)) {
                 free(array_1);
                 free(array_2);
                 free(reduced_array);
@@ -1228,7 +1274,7 @@ MIMPI_Retcode MIMPI_Reduce(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
 
         if (world_rank != root) {
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(world_rank), find_parent(world_rank))) {
+            if (read_message_reduce(get_barrier_read_desc(world_rank), &foo_buffer)) {
                 free(wake_up);
                 free(foo_buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
@@ -1243,7 +1289,7 @@ MIMPI_Retcode MIMPI_Reduce(
         }
     }
     else { // jestesmy lisciem
-        if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(world_rank), find_parent(world_rank))) {
+        if (read_message_reduce(get_barrier_read_desc(world_rank), &foo_buffer)) {
             free(wake_up);
             free(foo_buffer);
             return MIMPI_ERROR_REMOTE_FINISHED;
