@@ -34,13 +34,15 @@ int main(int argc, char **argv)
 
     uint8_t *data = malloc(data_size);
     assert(data);
-    memset(data, 1, data_size);
 
-    if (world_rank == 0)
+
+    memset(data, 1, data_size);
+    int root = 0;
+    if (world_rank == root)
     {
         uint8_t *recv_data = malloc(data_size);
         assert(recv_data);
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, 0));
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
         for (int i = 1; i < data_size; ++i)
             test_assert(recv_data[i] == recv_data[0]);
         printf("Number: %d\n", recv_data[0]);
@@ -49,15 +51,47 @@ int main(int argc, char **argv)
     }
     else
     {
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, 0));
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
     }
     test_assert(data[0] == 1);
     for (int i = 1; i < data_size; ++i)
         test_assert(data[i] == data[0]);
+
+    printf("ok1 %d\n", world_rank);
+
+
+    memset(data, 2, data_size);
+    root = 3;
+    if (world_rank == root)
+    {
+        uint8_t *recv_data = malloc(data_size);
+        assert(recv_data);
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
+        for (int i = 1; i < data_size; ++i) {
+            if (recv_data[i] != recv_data[0]) {
+                printf("Number: %d, index: %d, jestem %d\n", recv_data[i], i, world_rank);
+            }
+            test_assert(recv_data[i] == recv_data[0]);
+        }
+        printf("Number: %d\n", recv_data[0]);
+        fflush(stdout);
+        free(recv_data);
+    }
+    else
+    {
+        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
+    }
+    test_assert(data[0] == 2);
+    for (int i = 1; i < data_size; ++i)
+        test_assert(data[i] == data[0]);
+
+
     free(data);
 
     int res = unsetenv(WRITE_VAR);
     assert(res == 0);
+
+    printf("ok2 %d\n", world_rank);
 
     MIMPI_Finalize();
     return test_success();
@@ -88,6 +122,11 @@ do
    ./mimpirun 16 ./main
 done
 
+for i in {1..1000}
+do
+   echo $i
+   ./mimpirun 5 ./main
+done
 
 ./update_public_repo
 ./test_on_public_repo
