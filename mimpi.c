@@ -623,6 +623,11 @@ int send_message_to_pipe(int descriptor, void const *data, int count, int tag, b
     return MIMPI_SUCCESS;
 }
 
+void* first_message_from_other_barrier = NULL;
+int source_1 = -1;
+void* second_message_from_other_barrier = NULL;
+int source_2 = -1;
+
 void MIMPI_Finalize() {
 
     notify_iam_out(); // Zabraniamy wysłać do nas wiadomości poprzez MIMPI_SEND
@@ -683,6 +688,9 @@ void MIMPI_Finalize() {
     pthread_mutex_destroy(&mutex_pipes);
     pthread_mutex_destroy(&parent_sleeping);
     pthread_mutex_destroy(&unread_messages_sleeping);
+
+    free(first_message_from_other_barrier);
+    free(second_message_from_other_barrier);
 
     for (int i = 0; i < world_size; i++) {
         for (int j = 0; j < world_size; j++) {
@@ -836,25 +844,18 @@ int find_parent(int root) {
     return ((((w + i) % n) - 1) / 2 + n - i) % n;
 }
 
-void* first_message_from_other_barrier = NULL;
-int source_1 = -1;
-void* second_message_from_other_barrier = NULL;
-int source_2 = -1;
-
 int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_read_from, int want_to_read_from2) {
 
     free(*result_buffer);
 
     // Nie znajdziemy wiadomości z tagiem -1, bo jej nie zapiszemy
     if (second_message_from_other_barrier != NULL && (want_to_read_from == source_2 || want_to_read_from2 == source_2)) {
-//        printf("1. Jestem %d, znalazlem %d, chce %d\n", world_rank, (want_to_read_from == source_1 ? source_1 : source_2), want_to_read_from);
         *result_buffer = second_message_from_other_barrier;
         second_message_from_other_barrier = NULL;
         source_2 = -1;
         return false;
     }
     else if (first_message_from_other_barrier != NULL && (want_to_read_from == source_1 || want_to_read_from2 == source_1)) {
-//        printf("2. Jestem %d, znalazlem %d, chce %d\n", world_rank, (want_to_read_from == source_1 ? source_1 : source_2), want_to_read_from);
         *result_buffer = first_message_from_other_barrier;
         first_message_from_other_barrier = NULL;
         source_1 = -1;
@@ -864,36 +865,57 @@ int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_
 
     long long int result_buffer_size = 0;
     *result_buffer = malloc(result_buffer_size);
-
     void* buffer = malloc(512);  // Bufor do przechowywania fragmentów i metadanych
     assert(buffer);
-    int received = 0;  // Ile bajtów danych już otrzymaliśmy
-    int ile = 0, z_ilu = 1, fragment_tag, current_message_size, who_sent_it;
+
+    int received = 0, ile = 0, z_ilu = 1, current_message_size, who_sent_it;
 
     while (ile < z_ilu) {
 
         // Odbieranie fragmentu
         ASSERT_SYS_OK(chrecv(read_descriptor, buffer, 512));
-        memcpy(&fragment_tag, buffer + sizeof(int) * 2, sizeof(int));
-        if (no_of_barrier == -fragment_tag - 1) {
+        memcpy(&who_sent_it, buffer + sizeof(int) * 2, sizeof(int)); // W barierach w miejscu tagu jest nadawca lub coś ujemnego oznaczającego liczbę barier przez które ktoś przeszedł
+        if (no_of_barrier == -who_sent_it - 1) {
             someone_already_finished = true;
             continue;
         }
-        else if (no_of_barrier == -fragment_tag) {
+        else if (no_of_barrier == -who_sent_it) {
             free(buffer);
             someone_already_finished = true;
             no_of_barrier--;
             return true;
-        } else if (fragment_tag < 0) {
+        } else if (who_sent_it < 0) {
             assert(false); // TODO
         }
+
+        memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
+
+        // W następnej barierze jest inny root, więc obecny root może być w niej korzeniem i wysłać nam wiadomość, więc filtrujemy
+        if (who_sent_it != want_to_read_from && who_sent_it != want_to_read_from2) {
+            void* message_for_later = malloc(current_message_size);
+            assert(message_for_later);
+            memcpy(message_for_later, buffer + sizeof(int) * META_INFO_SIZE, current_message_size);
+
+            if (first_message_from_other_barrier == NULL) {
+                first_message_from_other_barrier = message_for_later;
+                source_1 = who_sent_it;
+            }
+            else if (second_message_from_other_barrier == NULL) {
+                second_message_from_other_barrier = message_for_later; // TODO będzie trzeba zwolnić w razie czego w finalize
+                source_2 = who_sent_it;
+            }
+            else {
+                assert(false);
+            }
+
+            // znowu czekamy na wiadomość
+            continue;
+        }
+
 
         // Rozpakowywanie metadanych z bufora
         memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
         memcpy(&z_ilu, buffer + sizeof(int) * 1, sizeof(int));
-        memcpy(&who_sent_it, buffer + sizeof(int) * 2, sizeof(int)); // W barierach w miejscu tagu jest nadawca
-        memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
-
 
         result_buffer_size += current_message_size;
         *result_buffer = realloc(*result_buffer, result_buffer_size);
@@ -904,28 +926,6 @@ int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_
     }
 
     free(buffer);
-//    printf("%d odebrał wiadomość tag %d\n", world_rank, who_sent_it);
-
-    // W następnej barierze jest inny root, więc obecny root może być w niej korzeniem i wysłać nam wiadomość, więc filtrujemy
-    if (who_sent_it != want_to_read_from && who_sent_it != want_to_read_from2) {
-//        printf("Jestem %d, chce %d, mam %d\n", world_rank, want_to_read_from, who_sent_it);
-        if (first_message_from_other_barrier == NULL) {
-            first_message_from_other_barrier = *result_buffer;
-            source_1 = who_sent_it;
-        }
-        else if (second_message_from_other_barrier == NULL) {
-            second_message_from_other_barrier = *result_buffer; // TODO będzie trzeba zwolnić w razie czego w finalize
-            source_2 = who_sent_it;
-        }
-        else {
-            assert(false);
-        }
-
-        // znowu czekamy na wiadomość
-        *result_buffer = NULL;
-        read_message_barrier(read_descriptor, result_buffer, want_to_read_from, want_to_read_from2);
-    }
-
     // nie robimy free result_buffer, bo ten jest potrzebny poza funkcją
 
     return false;

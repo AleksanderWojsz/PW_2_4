@@ -12,51 +12,76 @@
 #include "examples/test.h"
 #include "examples/mimpi_err.h"
 
-// TODO czy duzo wiadomosci zakleszcza sprawdzanie zakleszczen
-// lista odebranych wiadomosci jest za duza
-
+#define SIZE 20000
+// TODO bcast rozne rooty big message
 int main(int argc, char **argv)
 {
     MIMPI_Init(false);
     int const world_rank = MIMPI_World_rank();
-    srand(time(NULL));
 
-
-    char number = 0;
-//    if (world_rank == 1)
-//        number = 1;
-//    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 1));
-//    assert(number == 1);
-//
-//    if (world_rank == 3)
-//        number = 3;
-//    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 3));
-//    assert(number == 3);
-
-
-
-//    for (int i = 0; i < 16; i++) {
-//        if (world_rank == i) {
-//            number = i;
-//        }
-//        ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, i));
-//        assert(number == i);
-//    }
-
-//    printf("Number: %d\n", number);
-//    fflush(stdout);
-
-
-    for (int i = 0; i < 1000; i++) {
-        int random_root = rand() % 16;
-
-        if (world_rank == random_root) {
-            number = i % 128;
+    char data[SIZE] = {0};
+    if (world_rank == 0) {
+        for (int i = 0; i < SIZE; ++i) {
+            data[i] = 1;
         }
-        ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, random_root));
-        assert(number == i % 128);
+    }
+    ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, 0));
+    for (int i = 0; i < SIZE; i += 101) {
+        if (data[i] != 1) {
+            assert(data[i] == 1);
+        }
     }
 
+    if (world_rank == 3) {
+        for (int i = 0; i < SIZE; ++i) {
+            data[i] = 3;
+        }
+    }
+    ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, 3));
+    for (int i = 0; i < SIZE; i += 101) {
+        assert(data[i] == 3);
+    }
+
+    for (int i = 0; i < 16; i++) {
+        if (world_rank == i) {
+            for (int j = 0; j < SIZE; ++j) {
+                data[j] = i;
+            }
+        }
+
+        ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, i));
+        for (int j = 0; j < SIZE; j += 101) {
+            assert(data[j] == i);
+        }
+    }
+
+
+    for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 16; j++) {
+            int root = i;
+            if (world_rank == root) {
+                // Fill the entire array with the same number
+                for (int k = 0; k < SIZE; ++k) {
+                    data[k] = root;
+                }
+            }
+            ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, root));
+            for (int k = 0; k < SIZE; k += 101) {
+                assert(data[k] == root);
+            }
+
+            root = j;
+            if (world_rank == root) {
+                for (int k = 0; k < SIZE; ++k) {
+                    data[k] = root;
+                }
+            }
+            ASSERT_MIMPI_OK(MIMPI_Bcast(data, SIZE, root));
+            for (int k = 0; k < SIZE; k += 101) {
+                assert(data[k] == root);
+            }
+        }
+    }
 
     MIMPI_Finalize();
     return test_success();
@@ -166,4 +191,58 @@ int main(int argc, char **argv)
     return test_success();
 }
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ #include <assert.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdint-gcc.h>
+#include <stdlib.h>
+#include "mimpi.h"
+#include "examples/test.h"
+#include "examples/mimpi_err.h"
+
+// TODO czy duzo wiadomosci zakleszcza sprawdzanie zakleszczen
+// lista odebranych wiadomosci jest za duza
+
+int main(int argc, char **argv)
+{
+    MIMPI_Init(false);
+    int const world_rank = MIMPI_World_rank();
+    srand(time(NULL));
+
+
+    char number = 0;
+
+
+
+
+
+    MIMPI_Finalize();
+    return test_success();
+}
  */
