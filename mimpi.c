@@ -6,7 +6,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdio.h>
 
 #define POM_PIPES 90
 #define OUT_OF_MPI_BLOCK (-1)
@@ -143,6 +142,31 @@ Message* sent_messages = NULL;
 bool deadlock_detection = false;
 int no_of_barrier = 0;
 
+void pipe_write(int fd, const void *buf, size_t n) {
+    int written = 0;
+    while (written < n) {
+        int bytes_written = chsend(fd, buf + written, n - written);
+        ASSERT_SYS_OK(bytes_written);
+        written += bytes_written;
+    }
+}
+
+void pipe_write_without_assert(int fd, const void *buf, size_t n) {
+    int written = 0;
+    while (written < n) {
+        int bytes_written = chsend(fd, buf + written, n - written);
+        written += bytes_written;
+    }
+}
+
+void pipe_read(int fd, void *buf, size_t n) {
+    int read = 0;
+    while (read < n) {
+        int bytes_read = chrecv(fd, buf + read, n - read);
+        ASSERT_SYS_OK(bytes_read);
+        read += bytes_read;
+    }
+}
 
 int world_size = -10;
 int MIMPI_World_size() {
@@ -174,9 +198,9 @@ int check_arguments_correctness(int other_process_rank) {
 
 void notify_iam_out() {
     int is_active[MAX_N];
-    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * world_size));
+    pipe_read(60, is_active, sizeof(int) * world_size);
     is_active[world_rank] = 0;
-    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * world_size));
+    pipe_write(61, is_active, sizeof(int) * world_size);
 }
 
 bool is_in_MPI_block(int nr) {
@@ -186,9 +210,9 @@ bool is_in_MPI_block(int nr) {
     }
 
     int is_active[MAX_N];
-    ASSERT_SYS_OK(chrecv(60, is_active, sizeof(int) * world_size));
+    pipe_read(60, is_active, sizeof(int) * world_size);
     bool result = (is_active[nr] == 1);
-    ASSERT_SYS_OK(chsend(61, is_active, sizeof(int) * world_size));
+    pipe_write(61, is_active, sizeof(int) * world_size);
     return result;
 }
 
@@ -240,10 +264,10 @@ void notify_that_message_received(int who_sent_it_to_us, int count, int tag) { /
     message[2] = tag;
 
     int no_of_messages;
-    ASSERT_SYS_OK(chrecv(get_deadlock_counter_read_desc(who_sent_it_to_us), &no_of_messages, sizeof(int))); // Też jako mutex
+    pipe_read(get_deadlock_counter_read_desc(who_sent_it_to_us), &no_of_messages, sizeof(int)); // Też jako mutex
     no_of_messages++;
-    ASSERT_SYS_OK(chsend(get_deadlock_received_write_desc(who_sent_it_to_us), message, sizeof(int) * 3));
-    ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(who_sent_it_to_us), &no_of_messages, sizeof(int)));
+    pipe_write(get_deadlock_received_write_desc(who_sent_it_to_us), message, sizeof(int) * 3);
+    pipe_write(get_deadlock_counter_write_desc(who_sent_it_to_us), &no_of_messages, sizeof(int));
 }
 
 Message* odczytane_wiadomosci_deadlock = NULL;
@@ -268,11 +292,11 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
     int count[MAX_N];
     int tag[MAX_N];
 
-    ASSERT_SYS_OK(chrecv(110, c, sizeof(int) * world_size));
-    ASSERT_SYS_OK(chrecv(112, a, sizeof(int) * world_size));
-    ASSERT_SYS_OK(chrecv(114, source, sizeof(int) * world_size));
-    ASSERT_SYS_OK(chrecv(116, count, sizeof(int) * world_size));
-    ASSERT_SYS_OK(chrecv(118, tag, sizeof(int) * world_size));
+    pipe_read(110, c, sizeof(int) * world_size);
+    pipe_read(112, a, sizeof(int) * world_size);
+    pipe_read(114, source, sizeof(int) * world_size);
+    pipe_read(116, count, sizeof(int) * world_size);
+    pipe_read(118, tag, sizeof(int) * world_size);
 
     c[world_rank] = -1;
     a[world_rank] = -1;
@@ -284,15 +308,15 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
 
         // usuwamy z listy wysłanych wiadomości te, które już ktoś odebrał
         int no_of_messages_to_remove;
-        ASSERT_SYS_OK(chrecv(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int)));
-        ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int)));
+        pipe_read(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int));
+        pipe_write(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int));
         if (no_of_messages_to_remove > 0) {
             rodzic_czeka_na_odczytanie_wszystkich = true;
 
             ASSERT_ZERO(pthread_mutex_lock(&unread_messages_sleeping)); // jak są jeszcze jakieś nieodebrane wiadomości to czekamy
         }
 
-        ASSERT_SYS_OK(chrecv(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int))); // Jako mutex
+        pipe_read(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int)); // Jako mutex
         // Usuwamy odczytane wiadomości z listy wysłanych
         Message* to_delete = odczytane_wiadomosci_deadlock;
         while (to_delete != NULL) {
@@ -300,7 +324,7 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
             to_delete = to_delete->next;
         }
         list_clear(&odczytane_wiadomosci_deadlock);
-        ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int)));
+        pipe_write(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int));
 
 
         // Przetwarzamy zgłoszenia
@@ -317,7 +341,7 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
                     void* foo_message = malloc(512);
                     assert(foo_message);
                     memset(foo_message, 0, 512);
-                    ASSERT_SYS_OK(chsend(get_deadlock_write_desc(i), foo_message, 512));
+                    pipe_write(get_deadlock_write_desc(i), foo_message, 512);
                     free(foo_message);
                 }
             }
@@ -335,21 +359,21 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
             source[world_rank] = -1;
             count[world_rank] = -1;
             tag[world_rank] = -1;
-            ASSERT_SYS_OK(chsend(111, c, sizeof(int) * world_size));
-            ASSERT_SYS_OK(chsend(113, a, sizeof(int) * world_size));
-            ASSERT_SYS_OK(chsend(115, source, sizeof(int) * world_size));
-            ASSERT_SYS_OK(chsend(117, count, sizeof(int) * world_size));
-            ASSERT_SYS_OK(chsend(119, tag, sizeof(int) * world_size));
+            pipe_write(111, c, sizeof(int) * world_size);
+            pipe_write(113, a, sizeof(int) * world_size);
+            pipe_write(115, source, sizeof(int) * world_size);
+            pipe_write(117, count, sizeof(int) * world_size);
+            pipe_write(119, tag, sizeof(int) * world_size);
 
             return true;
         }
 
         // Oddajemy tablice
-        ASSERT_SYS_OK(chsend(111, c, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chsend(113, a, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chsend(115, source, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chsend(117, count, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chsend(119, tag, sizeof(int) * world_size));
+        pipe_write(111, c, sizeof(int) * world_size);
+        pipe_write(113, a, sizeof(int) * world_size);
+        pipe_write(115, source, sizeof(int) * world_size);
+        pipe_write(117, count, sizeof(int) * world_size);
+        pipe_write(119, tag, sizeof(int) * world_size);
 
 
         // śpimy
@@ -358,7 +382,7 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
             int who_finished;
             void* foo_message = malloc(512);
             assert(foo_message);
-            ASSERT_SYS_OK(chrecv(get_deadlock_read_desc(world_rank), foo_message, 512));
+            pipe_read(get_deadlock_read_desc(world_rank), foo_message, 512);
             memcpy(&fragment_tag, foo_message + sizeof(int) * 2, sizeof(int));
             memcpy(&who_finished, foo_message + sizeof(int) * 3, sizeof(int));
 
@@ -376,11 +400,11 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
                 else if (fragment_tag == -2) { // wątek nas obudził, bo mamy wiadomość
                     // usuwamy nasz wpis i wychodzimy
 
-                    ASSERT_SYS_OK(chrecv(110, c, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chrecv(112, a, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chrecv(114, source, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chrecv(116, count, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chrecv(118, tag, sizeof(int) * world_size));
+                    pipe_read(110, c, sizeof(int) * world_size);
+                    pipe_read(112, a, sizeof(int) * world_size);
+                    pipe_read(114, source, sizeof(int) * world_size);
+                    pipe_read(116, count, sizeof(int) * world_size);
+                    pipe_read(118, tag, sizeof(int) * world_size);
 
                     c[world_rank] = -1;
                     a[world_rank] = -1;
@@ -388,11 +412,11 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
                     count[world_rank] = -1;
                     tag[world_rank] = -1;
 
-                    ASSERT_SYS_OK(chsend(111, c, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chsend(113, a, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chsend(115, source, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chsend(117, count, sizeof(int) * world_size));
-                    ASSERT_SYS_OK(chsend(119, tag, sizeof(int) * world_size));
+                    pipe_write(111, c, sizeof(int) * world_size);
+                    pipe_write(113, a, sizeof(int) * world_size);
+                    pipe_write(115, source, sizeof(int) * world_size);
+                    pipe_write(117, count, sizeof(int) * world_size);
+                    pipe_write(119, tag, sizeof(int) * world_size);
 
                     free(foo_message);
 
@@ -407,11 +431,11 @@ bool check_for_deadlock_in_receive(int count_arg, int source_arg, int tag_arg) {
             free(foo_message);
         }
 
-        ASSERT_SYS_OK(chrecv(110, c, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chrecv(112, a, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chrecv(114, source, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chrecv(116, count, sizeof(int) * world_size));
-        ASSERT_SYS_OK(chrecv(118, tag, sizeof(int) * world_size));
+        pipe_read(110, c, sizeof(int) * world_size);
+        pipe_read(112, a, sizeof(int) * world_size);
+        pipe_read(114, source, sizeof(int) * world_size);
+        pipe_read(116, count, sizeof(int) * world_size);
+        pipe_read(118, tag, sizeof(int) * world_size);
     }
 }
 
@@ -430,7 +454,7 @@ void read_message_from_pom_pipe(int descriptor, void** result_buffer, int* count
     while (ile < z_ilu) {
 
         // Odbieranie fragmentu
-        ASSERT_SYS_OK(chrecv(descriptor, buffer, 512));
+        pipe_read(descriptor, buffer, 512);
 
         // Rozpakowywanie metadanych z bufora
         memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
@@ -496,7 +520,7 @@ void *read_messages_from_source(void *src) {
                 memset(message, 0, 512);
                 int tag = -2;
                 memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
-                ASSERT_SYS_OK(chsend(get_deadlock_write_desc(world_rank), message, 512));
+                pipe_write(get_deadlock_write_desc(world_rank), message, 512);
                 free(message);
             }
 
@@ -521,20 +545,20 @@ void *czytaj_odczytane_wiadomosci_deadlock() {
     // Czytamy wiadomości które ktoś już odebrał i zapisujemy je na listę
     while (true) {
         int message[3];
-        ASSERT_SYS_OK(chrecv(get_deadlock_received_read_desc(world_rank), message, sizeof(int) * 3));
+        pipe_read(get_deadlock_received_read_desc(world_rank), message, sizeof(int) * 3);
 
         int no_of_messages_to_remove;
-        ASSERT_SYS_OK(chrecv(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int))); // Też jako mutex
+        pipe_read(get_deadlock_counter_read_desc(world_rank), &no_of_messages_to_remove, sizeof(int)); // Też jako mutex
         if (message[2] == -1) {
-            ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int))); // Oddajemy mutexa
+            pipe_write(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int)); // Oddajemy mutexa
             return NULL;
         }
         list_add(&odczytane_wiadomosci_deadlock, NULL, message[1], message[0], message[2]);
         for (int i = 0; i < no_of_messages_to_remove - 1; i++) { // -1 bo juz pierwszą wiadomość odczytaliśmy
             list_add(&odczytane_wiadomosci_deadlock, NULL, message[1], message[0], message[2]);
-            ASSERT_SYS_OK(chrecv(get_deadlock_received_read_desc(world_rank), message, sizeof(int) * 3));
+            pipe_read(get_deadlock_received_read_desc(world_rank), message, sizeof(int) * 3);
             if (message[2] == -1) {
-                ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int))); // Oddajemy mutexa
+                pipe_write(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int)); // Oddajemy mutexa
                 return NULL;
             }
         }
@@ -544,7 +568,7 @@ void *czytaj_odczytane_wiadomosci_deadlock() {
             rodzic_czeka_na_odczytanie_wszystkich = false;
             ASSERT_ZERO(pthread_mutex_unlock(&unread_messages_sleeping));
         }
-        ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int)));
+        pipe_write(get_deadlock_counter_write_desc(world_rank), &no_of_messages_to_remove, sizeof(int));
     }
 }
 
@@ -615,7 +639,7 @@ int send_message_to_pipe(int descriptor, void const *data, int count, int tag, b
         memcpy(message + sizeof(int) * 4, data + i * max_message_size, current_message_size);
 
         // Wysyłanie wiadomości
-        ASSERT_SYS_OK(chsend(descriptor, message, 512));
+        pipe_write(descriptor, message, 512);
         nr_czesci++;
         free(message);
     }
@@ -649,7 +673,7 @@ void MIMPI_Finalize() {
                 memset(message, 0, 512);
                 memcpy(message + sizeof(int) * 2, &tag, sizeof(int)); // ze to wiadomość specjalna
                 memcpy(message + sizeof(int) * 3, &world_rank, sizeof(int)); // i to kim jestesmy
-                ASSERT_SYS_OK(chsend(get_deadlock_write_desc(i), message, 512));
+                pipe_write(get_deadlock_write_desc(i), message, 512);
                 free(message);
             }
         }
@@ -658,7 +682,7 @@ void MIMPI_Finalize() {
         message[0] = 10;
         message[1] = 10;
         message[2] = -1;
-        ASSERT_SYS_OK(chsend(get_deadlock_received_write_desc(world_rank), message, sizeof(int) * 3));
+        pipe_write(get_deadlock_received_write_desc(world_rank), message, sizeof(int) * 3);
         pthread_join(czytajacy_odczytane_wiadomosci_deadlock, NULL);
     }
 
@@ -713,7 +737,7 @@ void MIMPI_Finalize() {
             int tag = -no_of_barrier - 1;
             memcpy(message + sizeof(int) * 2, &tag, sizeof(int));
 
-            chsend(get_barrier_write_desc(i), message, 512);
+            pipe_write_without_assert(get_barrier_write_desc(i), message, 512); // Może zwrócić EPIPE
             free(message);
         }
     }
@@ -873,7 +897,7 @@ int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_
     while (ile < z_ilu) {
 
         // Odbieranie fragmentu
-        ASSERT_SYS_OK(chrecv(read_descriptor, buffer, 512));
+        pipe_read(read_descriptor, buffer, 512);
         memcpy(&who_sent_it, buffer + sizeof(int) * 2, sizeof(int)); // W barierach w miejscu tagu jest nadawca lub coś ujemnego oznaczającego liczbę barier przez które ktoś przeszedł
         if (no_of_barrier == -who_sent_it - 1) {
             someone_already_finished = true;
@@ -884,8 +908,6 @@ int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_
             someone_already_finished = true;
             no_of_barrier--;
             return true;
-        } else if (who_sent_it < 0) {
-            assert(false); // TODO
         }
 
         memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
@@ -963,18 +985,21 @@ MIMPI_Retcode MIMPI_Bcast(
         if (l < world_size) { // mamy lewe dziecko
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, l_send, p_send)) {
                 free(buffer);
+                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
         if (p < world_size) { // mamy prawe dziecko
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, p_send, l_send)) {
                 free(buffer);
+                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
 
         if (world_rank != root) { // budzimy rodzica
             void *wake_up = malloc(512);
+            assert(wake_up);
             memset(wake_up, 0, 512);
             send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, world_rank, false, 10);
             free(wake_up);
@@ -982,6 +1007,7 @@ MIMPI_Retcode MIMPI_Bcast(
     }
     else { // jesteśmy liściem
         void* wake_up = malloc(512);
+        assert(wake_up);
         memset(wake_up, 0, 512);
         send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, world_rank, false, 10);
         free(wake_up);
@@ -993,6 +1019,7 @@ MIMPI_Retcode MIMPI_Bcast(
         if (world_rank != root) {
             if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, find_parent(root), find_parent(root))) {
                 free(buffer);
+                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
             memcpy(data, buffer, count);
@@ -1008,6 +1035,7 @@ MIMPI_Retcode MIMPI_Bcast(
     else { // jestesmy lisciem
         if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, find_parent(root), find_parent(root))) {
             free(buffer);
+            no_of_barrier--;
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
         memcpy(data, buffer, count);
@@ -1098,7 +1126,7 @@ int read_message_reduce(int read_descriptor, void** result_buffer, int want_to_r
     while (ile < z_ilu || remaining_fragments_1 > 0 || remaining_fragments_2 > 0) {
 
         // Odbieranie fragmentu
-        ASSERT_SYS_OK(chrecv(read_descriptor, buffer, 512));
+        pipe_read(read_descriptor, buffer, 512);
         memcpy(&who_sent_it, buffer + sizeof(int) * 2, sizeof(int)); // W barierach w miejscu tagu jest nadawca lub coś ujemnego oznaczającego liczbę barier przez które ktoś przeszedł
         if (no_of_barrier == -who_sent_it - 1) {
             someone_already_finished = true;
@@ -1109,8 +1137,6 @@ int read_message_reduce(int read_descriptor, void** result_buffer, int want_to_r
             someone_already_finished = true;
             no_of_barrier--;
             return true;
-        } else if (who_sent_it < 0) {
-            assert(false); // TODO
         }
 
         memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
@@ -1230,11 +1256,11 @@ MIMPI_Retcode MIMPI_Reduce(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
         if (l < world_size && p >= world_size) { // mamy tylko lewe dziecko
-            if (read_message_reduce(get_barrier_read_desc(world_rank), &array_1, l_send, l_send)) { // TODO bylo l_send, p_send
+            if (read_message_reduce(get_barrier_read_desc(world_rank), &array_1, l_send, l_send)) {
                 free(array_1);
                 free(array_2);
                 free(reduced_array);
-                no_of_barrier--; // TODO czy wszędzie to zmniejszam?
+                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
 
@@ -1282,7 +1308,7 @@ MIMPI_Retcode MIMPI_Reduce(
 
             for (int j = 0; j < liczba_czesci_1 + liczba_czesci_2; j++) {
 
-                ASSERT_SYS_OK(chrecv(get_barrier_read_desc(world_rank), buffer, 512)); // Nie uzywamy read message from pipe bo tutaj mozemy miec fragmenty w dowolnej kolejnosci, wiec robimy fragment po fragmencie
+                pipe_read(get_barrier_read_desc(world_rank), buffer, 512); // Nie uzywamy read_message_from_pipe bo tutaj mozemy miec fragmenty w dowolnej kolejnosci, wiec robimy fragment po fragmencie
                 // Rozpakowywanie metadanych z bufora
                 memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
                 memcpy(&z_ilu, buffer + sizeof(int) * 1, sizeof(int));
@@ -1304,7 +1330,7 @@ MIMPI_Retcode MIMPI_Reduce(
                     }
 
                     // Rozpakowywanie metadanych z bufora
-                    ASSERT_SYS_OK(chrecv(get_barrier_read_desc(world_rank), buffer, 512)); // Nie uzywamy read message from pipe bo tutaj mozemy miec fragmenty w dowolnej kolejnosci, wiec robimy fragment po fragmencie
+                    pipe_read(get_barrier_read_desc(world_rank), buffer, 512);
                     memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
                     memcpy(&z_ilu, buffer + sizeof(int) * 1, sizeof(int));
                     memcpy(&ranga_nadawcy, buffer + sizeof(int) * 2, sizeof(int));
@@ -1352,8 +1378,8 @@ MIMPI_Retcode MIMPI_Reduce(
     assert(wake_up);
     memset(wake_up, 0, 512);
     void* foo_buffer = malloc(512);
-    memset(foo_buffer, 0, 512);
     assert(foo_buffer);
+    memset(foo_buffer, 0, 512);
 
     // Wysyłamy wiadomość od roota
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
@@ -1362,6 +1388,7 @@ MIMPI_Retcode MIMPI_Reduce(
             if (read_message_reduce(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(root), find_parent(root))) {
                 free(wake_up);
                 free(foo_buffer);
+                no_of_barrier--;
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
@@ -1377,6 +1404,7 @@ MIMPI_Retcode MIMPI_Reduce(
         if (read_message_reduce(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(root), find_parent(root))) {
             free(wake_up);
             free(foo_buffer);
+            no_of_barrier--;
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
     }

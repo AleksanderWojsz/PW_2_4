@@ -23,6 +23,15 @@ int get_deadlock_counter_write_desc(int rank) {
     return get_deadlock_counter_read_desc(rank) + 1;
 }
 
+void pipe_write(int fd, const void *buf, size_t n) {
+    int written = 0;
+    while (written < n) {
+        int bytes_written = chsend(fd, buf + written, n - written);
+        ASSERT_SYS_OK(bytes_written);
+        written += bytes_written;
+    }
+}
+
 void create_descriptors(int n, int desc[MAX_N][MAX_N][2], int pom_desc[POM_PIPES][2]) {
 
     int foo[20][2]; // Do zajęcia aż do 19 deskryptora włącznie
@@ -83,7 +92,7 @@ int main(int argc, char *argv[]) {
     char* program = argv[2]; // Ścieżka do programu
 
     int pom_desc[POM_PIPES][2]; // 'POM_PIPES' pipeów do współdzielenie danych między wszystkimi procesami
-    int desc[MAX_N][MAX_N][2]; // [skąd][dokąd][0 - write, 1 - read]
+    int desc[MAX_N][MAX_N][2]; // [skąd][dokąd][0 - read, 1 - write]
 
     create_descriptors(n, desc, pom_desc);
 
@@ -92,21 +101,21 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < n; i++) {
         active[i] = 1;
     }
-    ASSERT_SYS_OK(chsend(61, active, sizeof(int) * n));
+    pipe_write(61, active, sizeof(int) * n);
 
     // Tablica zgłoszeń do deadlocków
     int waiting_data[MAX_N];
     memset(waiting_data, -1, sizeof(int) * n);
-    ASSERT_SYS_OK(chsend(111, waiting_data, sizeof(int) * n)); // C
-    ASSERT_SYS_OK(chsend(113, waiting_data, sizeof(int) * n)); // A
-    ASSERT_SYS_OK(chsend(115, waiting_data, sizeof(int) * n)); // source
-    ASSERT_SYS_OK(chsend(117, waiting_data, sizeof(int) * n)); // count
-    ASSERT_SYS_OK(chsend(119, waiting_data, sizeof(int) * n)); // tag
+    pipe_write(111, waiting_data, sizeof(int) * n); // C
+    pipe_write(113, waiting_data, sizeof(int) * n); // A
+    pipe_write(115, waiting_data, sizeof(int) * n); // source
+    pipe_write(117, waiting_data, sizeof(int) * n); // count
+    pipe_write(119, waiting_data, sizeof(int) * n); // tag
 
     // Licznik wiadomości już odebranych, które będą usuwane z listy
     int no_of_messages_to_remove = 0;
     for (int i = 0; i < n; i++) {
-        ASSERT_SYS_OK(chsend(get_deadlock_counter_write_desc(i), &no_of_messages_to_remove, sizeof(int)));
+        pipe_write(get_deadlock_counter_write_desc(i), &no_of_messages_to_remove, sizeof(int));
     }
 
 
