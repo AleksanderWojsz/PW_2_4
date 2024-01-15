@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint-gcc.h>
+#include <stdlib.h>
 #include "mimpi.h"
 #include "examples/test.h"
 #include "examples/mimpi_err.h"
@@ -18,26 +19,43 @@ int main(int argc, char **argv)
 {
     MIMPI_Init(false);
     int const world_rank = MIMPI_World_rank();
-
+    srand(time(NULL));
 
 
     char number = 0;
-    if (world_rank == 1)
-        number = 1;
-    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 1));
+//    if (world_rank == 1)
+//        number = 1;
+//    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 1));
+//    assert(number == 1);
+//
+//    if (world_rank == 3)
+//        number = 3;
+//    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 3));
+//    assert(number == 3);
 
-    if (number != 1) {
-        printf("%d Number: %d\n", world_rank, number);
-        assert(number == 1);
+
+
+//    for (int i = 0; i < 16; i++) {
+//        if (world_rank == i) {
+//            number = i;
+//        }
+//        ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, i));
+//        assert(number == i);
+//    }
+
+//    printf("Number: %d\n", number);
+//    fflush(stdout);
+
+
+    for (int i = 0; i < 1000; i++) {
+        int random_root = rand() % 16;
+
+        if (world_rank == random_root) {
+            number = i % 128;
+        }
+        ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, random_root));
+        assert(number == i % 128);
     }
-
-    if (world_rank == 3)
-        number = 3;
-    ASSERT_MIMPI_OK(MIMPI_Bcast(&number, 1, 3));
-
-
-    printf("Number: %d\n", number);
-    fflush(stdout);
 
 
     MIMPI_Finalize();
@@ -77,11 +95,11 @@ done
 chmod -R 700 *
 
 VALGRIND=1 ./test
-VALGRIND=1 ./run_test 51 2 examples_build/big_message
+time VALGRIND=1 ./run_test 51 2 examples_build/big_message
 
 
 
-
+valgrind --track-origins=yes --trace-children=yes --track-fds=yes --leak-check=full --show-leak-kinds=all ./mimpirun 16 ./main
 
  */
 

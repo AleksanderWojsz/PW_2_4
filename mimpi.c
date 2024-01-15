@@ -836,28 +836,39 @@ int find_parent(int root) {
     return ((((w + i) % n) - 1) / 2 + n - i) % n;
 }
 
-void children_wake_up_and_send_data(int w, int i, int n, void* data, int count) {
-    // budzimy dzieci
-    if (2 * ((w + i) % n) + 1 < n) { // Jak mamy lewe dziecko
-        int l = (2 * w + i + 1) % n;
-        send_message_to_pipe(get_barrier_write_desc(l), data, count, 10, false, 10);
-    }
-    if (2 * ((w + i) % n) + 2 < n) {
-        int p = (2 * w + i + 2) % n;
-        send_message_to_pipe(get_barrier_write_desc(p), data, count, 10, false, 10);
-    }
-}
+void* first_message_from_other_barrier = NULL;
+int source_1 = -1;
+void* second_message_from_other_barrier = NULL;
+int source_2 = -1;
 
-int read_message_barrier(int read_descriptor, void** result_buffer) {
+int read_message_barrier(int read_descriptor, void** result_buffer, int want_to_read_from, int want_to_read_from2) {
 
     free(*result_buffer);
+
+    // Nie znajdziemy wiadomości z tagiem -1, bo jej nie zapiszemy
+    if (second_message_from_other_barrier != NULL && (want_to_read_from == source_2 || want_to_read_from2 == source_2)) {
+//        printf("1. Jestem %d, znalazlem %d, chce %d\n", world_rank, (want_to_read_from == source_1 ? source_1 : source_2), want_to_read_from);
+        *result_buffer = second_message_from_other_barrier;
+        second_message_from_other_barrier = NULL;
+        source_2 = -1;
+        return false;
+    }
+    else if (first_message_from_other_barrier != NULL && (want_to_read_from == source_1 || want_to_read_from2 == source_1)) {
+//        printf("2. Jestem %d, znalazlem %d, chce %d\n", world_rank, (want_to_read_from == source_1 ? source_1 : source_2), want_to_read_from);
+        *result_buffer = first_message_from_other_barrier;
+        first_message_from_other_barrier = NULL;
+        source_1 = -1;
+        return false;
+    }
+
+
     long long int result_buffer_size = 0;
     *result_buffer = malloc(result_buffer_size);
 
     void* buffer = malloc(512);  // Bufor do przechowywania fragmentów i metadanych
     assert(buffer);
     int received = 0;  // Ile bajtów danych już otrzymaliśmy
-    int ile = 0, z_ilu = 1, fragment_tag, current_message_size;
+    int ile = 0, z_ilu = 1, fragment_tag, current_message_size, who_sent_it;
 
     while (ile < z_ilu) {
 
@@ -873,11 +884,14 @@ int read_message_barrier(int read_descriptor, void** result_buffer) {
             someone_already_finished = true;
             no_of_barrier--;
             return true;
+        } else if (fragment_tag < 0) {
+            assert(false); // TODO
         }
 
         // Rozpakowywanie metadanych z bufora
         memcpy(&ile, buffer + sizeof(int) * 0, sizeof(int));
         memcpy(&z_ilu, buffer + sizeof(int) * 1, sizeof(int));
+        memcpy(&who_sent_it, buffer + sizeof(int) * 2, sizeof(int)); // W barierach w miejscu tagu jest nadawca
         memcpy(&current_message_size, buffer + sizeof(int) * 3, sizeof(int));
 
 
@@ -889,10 +903,35 @@ int read_message_barrier(int read_descriptor, void** result_buffer) {
         received += current_message_size;
     }
 
-    // nie robimy free result_buffer to ten jest potrzeny poza funkcją
     free(buffer);
+//    printf("%d odebrał wiadomość tag %d\n", world_rank, who_sent_it);
+
+    // W następnej barierze jest inny root, więc obecny root może być w niej korzeniem i wysłać nam wiadomość, więc filtrujemy
+    if (who_sent_it != want_to_read_from && who_sent_it != want_to_read_from2) {
+//        printf("Jestem %d, chce %d, mam %d\n", world_rank, want_to_read_from, who_sent_it);
+        if (first_message_from_other_barrier == NULL) {
+            first_message_from_other_barrier = *result_buffer;
+            source_1 = who_sent_it;
+        }
+        else if (second_message_from_other_barrier == NULL) {
+            second_message_from_other_barrier = *result_buffer; // TODO będzie trzeba zwolnić w razie czego w finalize
+            source_2 = who_sent_it;
+        }
+        else {
+            assert(false);
+        }
+
+        // znowu czekamy na wiadomość
+        *result_buffer = NULL;
+        read_message_barrier(read_descriptor, result_buffer, want_to_read_from, want_to_read_from2);
+    }
+
+    // nie robimy free result_buffer, bo ten jest potrzebny poza funkcją
+
     return false;
 }
+
+
 
 MIMPI_Retcode MIMPI_Bcast(
         void *data,
@@ -925,14 +964,13 @@ MIMPI_Retcode MIMPI_Bcast(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
         if (l < world_size) { // mamy lewe dziecko
-
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, l_send, p_send)) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
         }
         if (p < world_size) { // mamy prawe dziecko
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, p_send, l_send)) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
@@ -941,14 +979,14 @@ MIMPI_Retcode MIMPI_Bcast(
         if (world_rank != root) { // budzimy rodzica
             void *wake_up = malloc(512);
             memset(wake_up, 0, 512);
-            send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, 0, false, 10);
+            send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, world_rank, false, 10);
             free(wake_up);
         }
     }
     else { // jesteśmy liściem
         void* wake_up = malloc(512);
         memset(wake_up, 0, 512);
-        send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, 0, false, 10);
+        send_message_to_pipe(get_barrier_write_desc(find_parent(root)), wake_up, 100, world_rank, false, 10);
         free(wake_up);
     }
 
@@ -956,7 +994,7 @@ MIMPI_Retcode MIMPI_Bcast(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
 
         if (world_rank != root) {
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, find_parent(root), find_parent(root))) {
                 free(buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
             }
@@ -964,14 +1002,14 @@ MIMPI_Retcode MIMPI_Bcast(
         }
 
         if (l < world_size) {
-            send_message_to_pipe(get_barrier_write_desc(l_send), data, count, 0, false, 10);
+            send_message_to_pipe(get_barrier_write_desc(l_send), data, count, world_rank, false, 10);
         }
         if (p < world_size) {
-            send_message_to_pipe(get_barrier_write_desc(p_send), data, count, 0, false, 10);
+            send_message_to_pipe(get_barrier_write_desc(p_send), data, count, world_rank, false, 10);
         }
     }
     else { // jestesmy lisciem
-        if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer)) {
+        if (read_message_barrier(get_barrier_read_desc(world_rank), &buffer, find_parent(root), find_parent(root))) {
             free(buffer);
             return MIMPI_ERROR_REMOTE_FINISHED;
         }
@@ -1087,7 +1125,7 @@ MIMPI_Retcode MIMPI_Reduce(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub mamy dziecko
 
         if (l < world_size && p >= world_size) { // mamy tylko lewe dziecko
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &array_1)) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &array_1, l_send, p_send)) {
                 free(array_1);
                 free(array_2);
                 free(reduced_array);
@@ -1190,7 +1228,7 @@ MIMPI_Retcode MIMPI_Reduce(
     if (world_rank == root || l < world_size) { // jesteśmy korzeniem lub rodzicem
 
         if (world_rank != root) {
-            if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer)) {
+            if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(world_rank), find_parent(world_rank))) {
                 free(wake_up);
                 free(foo_buffer);
                 return MIMPI_ERROR_REMOTE_FINISHED;
@@ -1205,7 +1243,7 @@ MIMPI_Retcode MIMPI_Reduce(
         }
     }
     else { // jestesmy lisciem
-        if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer)) {
+        if (read_message_barrier(get_barrier_read_desc(world_rank), &foo_buffer, find_parent(world_rank), find_parent(world_rank))) {
             free(wake_up);
             free(foo_buffer);
             return MIMPI_ERROR_REMOTE_FINISHED;
