@@ -36,54 +36,59 @@ int main(int argc, char **argv)
     assert(data);
 
 
-    memset(data, 1, data_size);
-    int root = 0;
-    if (world_rank == root)
-    {
-        uint8_t *recv_data = malloc(data_size);
-        assert(recv_data);
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
-        for (int i = 1; i < data_size; ++i)
-            test_assert(recv_data[i] == recv_data[0]);
-        printf("Number: %d\n", recv_data[0]);
-        fflush(stdout);
-        free(recv_data);
-    }
-    else
-    {
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
-    }
-    test_assert(data[0] == 1);
-    for (int i = 1; i < data_size; ++i)
-        test_assert(data[i] == data[0]);
+    for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 16; j++) {
+            int i = 0;
+            int j = 3;
 
-    printf("ok1 %d\n", world_rank);
-
-
-    memset(data, 2, data_size);
-    root = 3;
-    if (world_rank == root)
-    {
-        uint8_t *recv_data = malloc(data_size);
-        assert(recv_data);
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
-        for (int i = 1; i < data_size; ++i) {
-            if (recv_data[i] != recv_data[0]) {
-                printf("Number: %d, index: %d, jestem %d\n", recv_data[i], i, world_rank);
+            memset(data, 1, data_size);
+            int root = i;
+            if (world_rank == root)
+            {
+                uint8_t *recv_data = malloc(data_size);
+                assert(recv_data);
+                ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
+                for (int i = 1; i < data_size; ++i)
+                    test_assert(recv_data[i] == recv_data[0]);
+                fflush(stdout);
+                free(recv_data);
             }
-            test_assert(recv_data[i] == recv_data[0]);
+            else
+            {
+                ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
+            }
+            test_assert(data[0] == 1);
+            for (int i = 1; i < data_size; ++i)
+                test_assert(data[i] == data[0]);
+
+            memset(data, 2, data_size);
+            root = j;
+            if (world_rank == root)
+            {
+                uint8_t *recv_data = malloc(data_size);
+                assert(recv_data);
+                ASSERT_MIMPI_OK(MIMPI_Reduce(data, recv_data, data_size, MIMPI_SUM, root));
+                for (int i = 1; i < data_size; ++i) {
+                    if (recv_data[i] != recv_data[0]) {
+                        printf("Number: %d, index: %d, jestem %d\n", recv_data[i], i, world_rank);
+                    }
+                    test_assert(recv_data[i] == recv_data[0]);
+                }
+                fflush(stdout);
+                free(recv_data);
+            }
+            else
+            {
+                ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
+            }
+            test_assert(data[0] == 2);
+            for (int i = 1; i < data_size; ++i)
+                test_assert(data[i] == data[0]);
+
         }
-        printf("Number: %d\n", recv_data[0]);
-        fflush(stdout);
-        free(recv_data);
     }
-    else
-    {
-        ASSERT_MIMPI_OK(MIMPI_Reduce(data, NULL, data_size, MIMPI_SUM, root));
-    }
-    test_assert(data[0] == 2);
-    for (int i = 1; i < data_size; ++i)
-        test_assert(data[i] == data[0]);
+
+    printf("ok22 %d\n", world_rank);
 
 
     free(data);
@@ -91,7 +96,7 @@ int main(int argc, char **argv)
     int res = unsetenv(WRITE_VAR);
     assert(res == 0);
 
-    printf("ok2 %d\n", world_rank);
+
 
     MIMPI_Finalize();
     return test_success();
@@ -139,7 +144,7 @@ time VALGRIND=1 ./run_test 51 2 examples_build/big_message
 
 
 
-valgrind --track-origins=yes --trace-children=yes --track-fds=yes --leak-check=full --show-leak-kinds=all ./mimpirun 16 ./main
+valgrind --trace-children=yes --track-fds=yes --track-origins=yes --leak-check=full --show-leak-kinds=all ./mimpirun 16 ./main
 
  */
 
